@@ -10,7 +10,7 @@ Last updated: _update this date each time you edit_
 
 ### Foundation
 - [x] Repo scaffolded (folder structure, README, .gitignore)
-- [ ] Supabase project created
+- [x] Supabase project created
 - [ ] Database schema deployed (001_initial_schema.sql run in Supabase)
 - [ ] `.env` filled with real Supabase + Gemini keys
 - [ ] FastAPI app runs locally (`main.py` boots without errors)
