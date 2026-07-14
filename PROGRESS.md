@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _update this date each time you edit_
+Last updated: _12/07/2026_
 
 ---
 
@@ -11,8 +11,8 @@ Last updated: _update this date each time you edit_
 ### Foundation
 - [x] Repo scaffolded (folder structure, README, .gitignore)
 - [x] Supabase project created
-- [ ] Database schema deployed (001_initial_schema.sql run in Supabase)
-- [ ] `.env` filled with real Supabase + Gemini keys
+- [x] Database schema deployed (001_initial_schema.sql run in Supabase)
+- [x] `.env` filled with real Supabase + Gemini keys
 - [ ] FastAPI app runs locally (`main.py` boots without errors)
 - [ ] Supabase Auth wired up (magic link)
 
