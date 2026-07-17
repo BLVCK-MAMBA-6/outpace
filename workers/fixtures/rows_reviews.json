@@ -1,0 +1,38 @@
+{
+  "product_name": "Rows — Synthetic Test Fixture",
+  "test_fixture": true,
+  "reviews": [
+    {
+      "id": "rows-test-review-001",
+      "rating": 5,
+      "title": "[TEST DATA] Helpful AI analysis",
+      "pros": "[TEST DATA] The AI tools make spreadsheet analysis faster.",
+      "cons": "[TEST DATA] More integrations would be useful.",
+      "published_at": "2026-07-10T12:00:00Z"
+    },
+    {
+      "id": "rows-test-review-002",
+      "rating": 4,
+      "title": "[TEST DATA] Good collaboration features",
+      "pros": "[TEST DATA] Sharing reports with teammates is straightforward.",
+      "cons": "[TEST DATA] Some advanced features take time to learn.",
+      "published_at": "2026-07-08T12:00:00Z"
+    },
+    {
+      "id": "rows-test-review-003",
+      "rating": 3,
+      "title": "[TEST DATA] Useful but occasionally slow",
+      "pros": "[TEST DATA] Data imports save a lot of manual work.",
+      "cons": "[TEST DATA] Large datasets can feel slow.",
+      "published_at": "2026-07-05T12:00:00Z"
+    },
+    {
+      "id": "rows-test-review-004",
+      "rating": 1,
+      "title": "[TEST DATA] Difficult large dataset experience",
+      "pros": "[TEST DATA] The spreadsheet interface is familiar.",
+      "cons": "[TEST DATA] Large datasets were slow and repeatedly interrupted our workflow.",
+      "published_at": "2026-07-17T18:30:00Z"
+    }
+  ]
+}

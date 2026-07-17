@@ -13,28 +13,35 @@ Last updated: _12/07/2026_
 - [x] Supabase project created
 - [x] Database schema deployed (001_initial_schema.sql run in Supabase)
 - [x] `.env` filled with real Supabase + Gemini keys
-- [ ] FastAPI app runs locally (`main.py` boots without errors)
+- [x] FastAPI app runs locally (`main.py` boots without errors)
 - [ ] Supabase Auth wired up (magic link)
 
+## Known Shortcuts (fix before real users)
+- [ ] competitors.py uses a hardcoded PLACEHOLDER_USER_ID — needs real Supabase Auth wired in before multi-user support works
+
 ### Signal Type 1 — General Website Monitoring
-- [ ] Playwright scraper fetches a competitor homepage
-- [ ] Raw HTML snapshot stored in `snapshots` table
-- [ ] Diffing logic compares snapshot N vs N-1
-- [ ] Claude/Gemini synthesis turns diff into structured brief
-- [ ] Brief stored in `briefs` table
-- [ ] Manually tested end-to-end on 1 real competitor
+- [x] Playwright scraper fetches a competitor homepage
+- [x] Raw HTML snapshot stored in `snapshots` table
+- [x] Diffing logic compares snapshot N vs N-1
+- [x] Claude/Gemini synthesis turns diff into structured brief
+- [x] Brief stored in `briefs` table
+- [x] Manually tested end-to-end on 1 real competitor (Rows, controlled test change)
 
 ### Signal Type 2 — Pricing Page Monitoring
-- [ ] Pricing page scraper built
-- [ ] Structured extraction (plan name, price, features → JSON)
-- [ ] Schema diff logic (catches changes even through redesigns)
+- [x] Pricing page scraper built
+- [x] Structured extraction (plan name, price, features → JSON)
+- [x] Schema diff logic (catches changes even through redesigns)
 - [ ] Pricing-specific synthesis prompt
 - [ ] Tested on 1 real competitor's pricing page
 
 ### Signal Type 3 — Reviews (G2 / Capterra)
-- [ ] Review scraper built
-- [ ] New review / rating shift detection
-- [ ] Synthesis wired up
+- [ ] Live review provider integration (G2 token works, but account currently returns no entitled products)
+- [x] Review ingestion adapter tested with clearly labeled synthetic fixture data
+- [x] New review / rating shift detection
+- [x] Review-specific Gemini synthesis wired up
+- [x] Review brief stored in `briefs` table
+- [x] Duplicate brief prevention tested
+- [x] Controlled end-to-end test completed on Rows fixture data
 
 ### Signal Type 4 — Job Postings
 - [ ] Job board scraper built (or API if available)
@@ -107,7 +114,129 @@ Last updated: _12/07/2026_
 ---
 
 ## Notes / Decisions Log
-_Use this space to jot down decisions as you make them — future you will thank present you._
 
-- Using Gemini API instead of Claude API for synthesis (cost reasons) — [date]
--
+This log records architectural decisions, temporary shortcuts, blockers, and the reason behind each choice.
+
+### 12/07/2026 — Temporary hardcoded user identity
+
+**Decision:** Use `PLACEHOLDER_USER_ID` during the initial single-user MVP pipeline.
+
+**Reason:** Authentication was not required to prove that competitor creation, monitoring, synthesis, and brief storage worked end-to-end.
+
+**Follow-up:** Replace the placeholder with the authenticated Supabase user before onboarding real or multiple users.
+
+---
+
+### 15/07/2026 — Gemini selected for synthesis
+
+**Decision:** Use the Gemini API instead of Claude for structured competitive-intelligence synthesis.
+
+**Reason:** Gemini was selected for initial cost control and was available through the existing Google API setup.
+
+**Implementation:** Structured responses are validated with Pydantic before being stored.
+
+---
+
+### 15/07/2026 — Julius AI monitoring deferred
+
+**Decision:** Do not bypass Julius AI's Cloudflare or CAPTCHA protection.
+
+**Reason:** Playwright received a Cloudflare challenge instead of the real homepage. Saving the challenge page would create invalid snapshots and false change alerts.
+
+**Follow-up:**
+
+- Detect blocked pages using indicators such as `Just a moment`, `Verify you are human`, `cf-chl`, and Cloudflare challenge elements.
+- Reject challenge pages before snapshot insertion.
+- Record the failure reason for monitoring and debugging.
+- Revisit Julius AI through a permitted API, RSS feed, sitemap, accessible public page, or explicit scraping permission.
+
+---
+
+### 15/07/2026 — Rows selected as the first test competitor
+
+**Decision:** Use Rows to validate the initial monitoring pipeline.
+
+**Reason:** Its homepage was accessible through Playwright and supplied meaningful content for development.
+
+**Verified result:**
+
+- Competitor ID: `dad6bbe4-6425-4b86-ba91-611a6fe74302`
+- First snapshot ID: `8c771ae8-e8a2-4d7e-a98f-24426d43d8ad`
+- Page title: `Rows - Your new AI Data Analyst`
+- Raw HTML characters: `5,931,165`
+- Extracted text characters: `3,613`
+
+---
+
+### 15/07/2026 — General monitoring compares meaningful text
+
+**Decision:** Store both raw HTML and extracted meaningful text, but use normalized text for general website diffing.
+
+**Reason:** Raw HTML contains scripts, generated markup, and other noise that could trigger false changes. Extracted text better represents user-visible competitor messaging.
+
+---
+
+### 15/07/2026 — Controlled fixtures permitted for pipeline testing
+
+**Decision:** Use clearly labeled synthetic snapshot changes when a real competitor has not changed during testing.
+
+**Reason:** An end-to-end pipeline cannot be reliably tested by waiting for an unpredictable real-world website change.
+
+**Rule:** Fixtures must contain labels such as `[OUTPACE INTEGRATION TEST ONLY]` or `[TEST DATA]` and must never be presented as real competitor activity.
+
+---
+
+### 16/07/2026 — Pricing monitoring uses structured plans
+
+**Decision:** Extract pricing pages into structured plan objects and compare those objects instead of comparing page text or HTML.
+
+**Reason:** Structured comparison can detect plan, price, feature, and billing changes while ignoring plan order and webpage redesigns.
+
+**Verified result:** The controlled pricing test detected a newly added plan, generated a pricing-specific Gemini brief, stored it in Supabase, and prevented duplicate brief insertion.
+
+---
+
+### 17/07/2026 — G2 live review ingestion blocked by entitlement
+
+**Decision:** Keep the G2 provider interface, but do not claim the G2 integration is production-ready.
+
+**Reason:** The G2 API token authenticates successfully, but `/api/v2/products` returns zero products because the account currently has no entitled product data.
+
+**Follow-up:** Obtain the required G2 data subscription or connect another permitted review provider before enabling live review monitoring.
+
+---
+
+### 17/07/2026 — Synthetic review provider used for validation
+
+**Decision:** Use a clearly labeled manual fixture provider to test the review pipeline while live G2 data is unavailable.
+
+**Reason:** This allows review snapshot storage, new-review detection, rating-shift calculation, negative-review classification, Gemini synthesis, brief storage, and idempotency to be tested independently from the external provider.
+
+**Verified result:**
+
+- Review count changed from `3` to `4`
+- Average rating changed from `4.0` to `3.25`
+- Rating delta was `-0.75`
+- One new 1-star review was detected
+- Gemini labeled the result as synthetic
+- Priority remained `low`
+- Duplicate brief insertion was prevented
+
+---
+
+### 17/07/2026 — Dependency versions aligned
+
+**Decision:** Upgrade the Supabase Python SDK after installing `google-genai`.
+
+**Reason:** `google-genai` required `httpx 0.28.1`, while the older Supabase SDK required `httpx <0.28`.
+
+**Result:** Supabase was upgraded to `2.31.0`, and `pip check` reported no broken requirements.
+
+**Status:** Resolved on 17/07/2026. The working Supabase, Gemini, HTTPX, and Pydantic versions are pinned in `requirements.txt`.
+
+---
+
+### Open assumptions to validate
+
+- The proposed target of `10–15` actionable briefs per competitor per week is a working alert-fatigue hypothesis, not yet a validated product requirement.
+- Validate alert volume with beta users before encoding it as permanent priority or suppression logic.

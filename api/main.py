@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # We'll build these router files next — they contain the actual
 # logic for handling competitor and brief-related requests.
-from api.routers import competitors, briefs
+from api.routers import competitors, briefs, pipeline
 
 
 # Create the FastAPI application instance.
@@ -63,6 +63,7 @@ app.add_middleware(
 # ------------------------------------------------------------
 app.include_router(competitors.router, prefix="/competitors", tags=["Competitors"])
 app.include_router(briefs.router, prefix="/briefs", tags=["Briefs"])
+app.include_router(pipeline.router, prefix="/pipeline", tags=["Pipeline"])
 
 
 # ------------------------------------------------------------

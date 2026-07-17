@@ -1,23 +1,38 @@
 """
-briefs.py — Brief Retrieval Endpoints
-========================================
-This router will handle fetching AI-synthesized briefs for a user
-(the "here's what changed with your competitors" insights).
-
-Currently a stub — we'll build this out once the diffing and
-synthesis pipeline (Week 2-3) is actually producing real briefs
-to fetch.
+Brief retrieval endpoints.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
+
+from api.models.schemas import BriefResponse
+from api.utils.supabase_client import get_supabase_client
+
 
 router = APIRouter()
+supabase = get_supabase_client()
+
+# Replace this after Supabase Auth is implemented.
+PLACEHOLDER_USER_ID = "56b30126-44f2-49e5-a52e-ed6e91d4896c"
 
 
-@router.get("/")
-def list_briefs():
-    """
-    Placeholder endpoint. Will eventually return all briefs
-    for the logged-in user, most recent first.
-    """
-    return {"message": "Briefs endpoint — coming in Week 2-3 once synthesis pipeline exists"}
+@router.get("/", response_model=list[BriefResponse])
+def list_briefs(
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Return the current user's briefs, newest first."""
+    try:
+        result = (
+            supabase.table("briefs")
+            .select("*")
+            .eq("user_id", PLACEHOLDER_USER_ID)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve briefs: {error}",
+        ) from error
+
+    return result.data
