@@ -606,6 +606,286 @@ def compare_review_snapshots(
 
 
 # ============================================================
+# JOB-POSTING DIFFING
+# ============================================================
+
+def job_map(
+    jobs: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Index jobs by their stable provider identifier."""
+    indexed = {}
+
+    for job in jobs:
+        job_id = str(
+            job.get("id", "")
+        ).strip()
+
+        if not job_id:
+            raise ValueError(
+                "Every job must have a stable id"
+            )
+
+        if job_id in indexed:
+            raise ValueError(
+                f"Duplicate job identifier found: {job_id}"
+            )
+
+        indexed[job_id] = job
+
+    return indexed
+
+
+def comparable_job(
+    job: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove ingestion-only fields before comparison."""
+    ignored_fields = {
+        "fetched_at",
+        "scraped_at",
+        "captured_at",
+        "ingested_at",
+    }
+
+    return {
+        key: value
+        for key, value in job.items()
+        if key not in ignored_fields
+    }
+
+
+def changed_job_fields(
+    old_job: dict[str, Any],
+    new_job: dict[str, Any],
+) -> list[str]:
+    """Return fields changed on an existing job."""
+    old_comparable = comparable_job(old_job)
+    new_comparable = comparable_job(new_job)
+
+    all_fields = (
+        set(old_comparable)
+        | set(new_comparable)
+    )
+
+    return sorted(
+        field
+        for field in all_fields
+        if old_comparable.get(field)
+        != new_comparable.get(field)
+    )
+
+
+def job_field_counts(
+    jobs: list[dict[str, Any]],
+    field: str,
+) -> dict[str, int]:
+    """Count non-empty department or location values."""
+    counts: dict[str, int] = {}
+
+    for job in jobs:
+        value = str(
+            job.get(field, "")
+        ).strip()
+
+        if not value:
+            continue
+
+        counts[value] = counts.get(value, 0) + 1
+
+    return dict(
+        sorted(
+            counts.items(),
+            key=lambda item: item[0].casefold(),
+        )
+    )
+
+
+def is_remote_job(
+    job: dict[str, Any],
+) -> bool:
+    """Identify a remote job from normalized fields."""
+    workplace_type = str(
+        job.get("workplace_type", "")
+    ).casefold()
+
+    location = str(
+        job.get("location", "")
+    ).casefold()
+
+    return (
+        workplace_type == "remote"
+        or "remote" in location
+    )
+
+
+def compare_job_snapshots(
+    old_content: dict[str, Any],
+    new_content: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Compare structured job snapshots.
+
+    Detects:
+
+    - Newly opened jobs
+    - Removed or closed jobs
+    - Updated job fields
+    - New remote jobs
+    - Department and location changes
+    """
+    old_jobs = old_content.get("jobs") or []
+    new_jobs = new_content.get("jobs") or []
+
+    if not isinstance(old_jobs, list):
+        raise ValueError(
+            "Old job snapshot raw_content.jobs "
+            "must be a list"
+        )
+
+    if not isinstance(new_jobs, list):
+        raise ValueError(
+            "New job snapshot raw_content.jobs "
+            "must be a list"
+        )
+
+    old_map = job_map(old_jobs)
+    new_map = job_map(new_jobs)
+
+    old_ids = set(old_map)
+    new_ids = set(new_map)
+
+    added_ids = sorted(
+        new_ids - old_ids
+    )
+
+    removed_ids = sorted(
+        old_ids - new_ids
+    )
+
+    shared_ids = sorted(
+        old_ids & new_ids
+    )
+
+    jobs_added = [
+        new_map[job_id]
+        for job_id in added_ids
+    ]
+
+    jobs_removed = [
+        old_map[job_id]
+        for job_id in removed_ids
+    ]
+
+    jobs_updated = []
+    changes = []
+
+    for job in jobs_added:
+        changes.append(
+            {
+                "type": "job_added",
+                "job_id": job["id"],
+                "job": job,
+            }
+        )
+
+    for job in jobs_removed:
+        changes.append(
+            {
+                "type": "job_removed",
+                "job_id": job["id"],
+                "job": job,
+            }
+        )
+
+    for job_id in shared_ids:
+        old_job = old_map[job_id]
+        new_job = new_map[job_id]
+
+        changed_fields = changed_job_fields(
+            old_job=old_job,
+            new_job=new_job,
+        )
+
+        if not changed_fields:
+            continue
+
+        update = {
+            "job_id": job_id,
+            "changed_fields": changed_fields,
+            "old": old_job,
+            "new": new_job,
+        }
+
+        jobs_updated.append(update)
+
+        changes.append(
+            {
+                "type": "job_updated",
+                **update,
+            }
+        )
+
+    new_remote_jobs = [
+        job
+        for job in jobs_added
+        if is_remote_job(job)
+    ]
+
+    old_department_counts = job_field_counts(
+        old_jobs,
+        "department",
+    )
+
+    new_department_counts = job_field_counts(
+        new_jobs,
+        "department",
+    )
+
+    old_location_counts = job_field_counts(
+        old_jobs,
+        "location",
+    )
+
+    new_location_counts = job_field_counts(
+        new_jobs,
+        "location",
+    )
+
+    return {
+        "has_changes": bool(changes),
+        "old_job_count": len(old_jobs),
+        "new_job_count": len(new_jobs),
+        "job_count_delta": (
+            len(new_jobs) - len(old_jobs)
+        ),
+        "jobs_added": jobs_added,
+        "jobs_removed": jobs_removed,
+        "jobs_updated": jobs_updated,
+        "new_remote_jobs": new_remote_jobs,
+        "new_remote_job_count": len(
+            new_remote_jobs
+        ),
+        "old_department_counts": (
+            old_department_counts
+        ),
+        "new_department_counts": (
+            new_department_counts
+        ),
+        "old_location_counts": (
+            old_location_counts
+        ),
+        "new_location_counts": (
+            new_location_counts
+        ),
+        "change_count": len(changes),
+        "test_fixture": bool(
+            old_content.get("test_fixture")
+            or new_content.get("test_fixture")
+        ),
+        "changes": changes,
+    }
+
+
+# ============================================================
 # DATABASE SNAPSHOT RETRIEVAL
 # ============================================================
 
@@ -664,13 +944,31 @@ def compare_latest_snapshots(
         )
 
     elif signal_type == "reviews":
-        if "reviews" not in old_content or "reviews" not in new_content:
+        if (
+            "reviews" not in old_content
+            or "reviews" not in new_content
+        ):
             raise ValueError(
                 "One or both review snapshots do not contain "
                 "raw_content.reviews"
             )
 
         diff = compare_review_snapshots(
+            old_content=old_content,
+            new_content=new_content,
+        )
+
+    elif signal_type == "jobs":
+        if (
+            "jobs" not in old_content
+            or "jobs" not in new_content
+        ):
+            raise ValueError(
+                "One or both job snapshots do not contain "
+                "raw_content.jobs"
+            )
+
+        diff = compare_job_snapshots(
             old_content=old_content,
             new_content=new_content,
         )

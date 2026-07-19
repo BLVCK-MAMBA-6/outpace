@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _12/07/2026_
+Last updated: _18/07/2026_
 
 ---
 
@@ -44,9 +44,19 @@ Last updated: _12/07/2026_
 - [x] Controlled end-to-end test completed on Rows fixture data
 
 ### Signal Type 4 — Job Postings
-- [ ] Job board scraper built (or API if available)
-- [ ] New posting detection
-- [ ] Synthesis wired up
+- [x] `job_sources` configuration table created
+- [x] Public GitHub careers provider built
+- [x] Public HTML careers provider built
+- [x] Structured job snapshots stored in `snapshots` table
+- [x] Zero-opening live baseline tested on Rows
+- [x] Active live-job ingestion tested on Hex (26 real openings)
+- [x] Stable live job identifiers verified across repeated collections
+- [x] Department, location, and remote signals extracted
+- [x] New, removed, and updated job detection implemented
+- [x] Job-specific Gemini synthesis wired up
+- [x] Controlled job brief stored in `briefs` table
+- [x] Duplicate brief prevention tested
+- [ ] Natural real-world job addition/removal observed
 
 ### Signal Type 5 — News & Press
 - [ ] RSS feed monitoring set up
@@ -233,6 +243,36 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 **Result:** Supabase was upgraded to `2.31.0`, and `pip check` reported no broken requirements.
 
 **Status:** Resolved on 17/07/2026. The working Supabase, Gemini, HTTPX, and Pydantic versions are pinned in `requirements.txt`.
+
+---
+
+### 18/07/2026 — Public careers sources used for job monitoring
+
+**Decision:** Monitor official public career sources through provider-specific adapters instead of scraping aggregators such as LinkedIn or Indeed.
+
+**Reason:** Official sources provide clearer current-opening data, more stable identifiers, and fewer duplication and access problems.
+
+**Implementation:**
+
+- GitHub careers provider for repositories such as `rows/hiring`.
+- Public HTML careers provider for server-rendered company career pages.
+- Structured fields include title, department, location, workplace type, URL, and provider-stable ID.
+
+**Live verification:**
+
+- Rows' official GitHub careers source returned zero openings; zero was correctly stored as valid live data.
+- Hex's official careers page returned 26 real openings.
+- Nine Hex roles were identified as remote-compatible.
+- Departments were extracted: Engineering 13, Sales 5, Product 3, Customer 2, Design 1, Marketing 1, and People 1.
+- A second Hex collection returned the same 26 stable jobs with no false changes.
+- All live snapshots were marked `test_fixture: false`.
+
+**Controlled verification:**
+
+- A synthetic new role tested addition detection, Gemini synthesis, brief storage, and duplicate prevention.
+- Two fresh Rows snapshots restored its latest comparison state to live data.
+
+**Follow-up:** Add Greenhouse and Lever adapters when a monitored competitor uses those systems. A natural live addition or removal has not yet been observed.
 
 ---
 
