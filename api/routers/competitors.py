@@ -1,16 +1,15 @@
 """
-Competitor management endpoints.
-
-Authentication remains a known MVP shortcut. All queries are scoped to
-the placeholder user until Supabase Auth is connected.
+Authenticated competitor management endpoints.
 """
 
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from api.dependencies.auth import get_current_user
 from api.models.schemas import (
+    AuthenticatedUser,
     CompetitorCreate,
     CompetitorResponse,
     CompetitorUpdate,
@@ -21,10 +20,6 @@ from api.utils.supabase_client import get_supabase_client
 router = APIRouter()
 supabase = get_supabase_client()
 
-PLACEHOLDER_USER_ID = (
-    "56b30126-44f2-49e5-a52e-ed6e91d4896c"
-)
-
 
 @router.post(
     "/",
@@ -33,14 +28,15 @@ PLACEHOLDER_USER_ID = (
 )
 def add_competitor(
     competitor: CompetitorCreate,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
 ):
-    """Create a competitor for the current MVP user."""
+    """Create a competitor owned by the authenticated user."""
     row = {
-        "user_id": PLACEHOLDER_USER_ID,
+        "user_id": str(current_user.id),
         "name": competitor.name.strip(),
-        "website_url": str(
-            competitor.website_url
-        ),
+        "website_url": str(competitor.website_url),
         "pricing_url": (
             str(competitor.pricing_url)
             if competitor.pricing_url
@@ -73,13 +69,17 @@ def add_competitor(
     "/",
     response_model=list[CompetitorResponse],
 )
-def list_competitors():
-    """List competitors belonging to the MVP user."""
+def list_competitors(
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
+):
+    """List competitors owned by the authenticated user."""
     try:
         result = (
             supabase.table("competitors")
             .select("*")
-            .eq("user_id", PLACEHOLDER_USER_ID)
+            .eq("user_id", str(current_user.id))
             .order("created_at", desc=True)
             .execute()
         )
@@ -98,14 +98,17 @@ def list_competitors():
 )
 def get_competitor(
     competitor_id: UUID,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
 ):
-    """Retrieve one competitor belonging to the MVP user."""
+    """Retrieve one competitor owned by the authenticated user."""
     try:
         result = (
             supabase.table("competitors")
             .select("*")
             .eq("id", str(competitor_id))
-            .eq("user_id", PLACEHOLDER_USER_ID)
+            .eq("user_id", str(current_user.id))
             .limit(1)
             .execute()
         )
@@ -131,8 +134,11 @@ def get_competitor(
 def update_competitor(
     competitor_id: UUID,
     competitor: CompetitorUpdate,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
 ):
-    """Update supplied fields on one competitor."""
+    """Update one competitor owned by the authenticated user."""
     supplied = competitor.model_dump(
         exclude_unset=True
     )
@@ -169,7 +175,7 @@ def update_competitor(
             supabase.table("competitors")
             .update(updates)
             .eq("id", str(competitor_id))
-            .eq("user_id", PLACEHOLDER_USER_ID)
+            .eq("user_id", str(current_user.id))
             .execute()
         )
     except Exception as error:

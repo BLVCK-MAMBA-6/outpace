@@ -1,16 +1,19 @@
 """
-Brief retrieval endpoints.
+Authenticated brief retrieval endpoints.
 """
 
 from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Query,
 )
 
+from api.dependencies.auth import get_current_user
 from api.models.schemas import (
+    AuthenticatedUser,
     BriefPriority,
     BriefResponse,
     SignalType,
@@ -20,10 +23,6 @@ from api.utils.supabase_client import get_supabase_client
 
 router = APIRouter()
 supabase = get_supabase_client()
-
-PLACEHOLDER_USER_ID = (
-    "56b30126-44f2-49e5-a52e-ed6e91d4896c"
-)
 
 
 @router.get(
@@ -40,13 +39,16 @@ def list_briefs(
     signal_type: SignalType | None = None,
     priority: BriefPriority | None = None,
     delivered: bool | None = None,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
 ):
-    """Return filtered briefs, newest first."""
+    """Return the authenticated user's filtered briefs."""
     try:
         query = (
             supabase.table("briefs")
             .select("*")
-            .eq("user_id", PLACEHOLDER_USER_ID)
+            .eq("user_id", str(current_user.id))
         )
 
         if competitor_id is not None:
@@ -58,13 +60,13 @@ def list_briefs(
         if signal_type is not None:
             query = query.eq(
                 "signal_type",
-                signal_type,
+                signal_type.value,
             )
 
         if priority is not None:
             query = query.eq(
                 "priority",
-                priority,
+                priority.value,
             )
 
         if delivered is not None:
@@ -96,14 +98,17 @@ def list_briefs(
 )
 def get_brief(
     brief_id: UUID,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
 ):
-    """Retrieve one brief belonging to the MVP user."""
+    """Retrieve one brief owned by the authenticated user."""
     try:
         result = (
             supabase.table("briefs")
             .select("*")
             .eq("id", str(brief_id))
-            .eq("user_id", PLACEHOLDER_USER_ID)
+            .eq("user_id", str(current_user.id))
             .limit(1)
             .execute()
         )

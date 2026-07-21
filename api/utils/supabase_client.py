@@ -1,32 +1,57 @@
 """
-supabase_client.py — Shared Supabase Connection
-==================================================
-Instead of every file creating its own Supabase connection (wasteful
-and error-prone), we create ONE shared client here and import it
-wherever we need database access.
+Shared Supabase clients.
+
+The service-role client is for trusted backend database operations.
+The Auth client uses the public anon/publishable key for user-facing
+authentication and JWT validation.
 """
 
 import os
+
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import Client, create_client
+
 
 load_dotenv()
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_PUBLIC_KEY = (
+    os.getenv("SUPABASE_PUBLISHABLE_KEY")
+    or os.getenv("SUPABASE_KEY")
+)
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY"
+)
+
 
 
 def get_supabase_client() -> Client:
-    """
-    Returns a configured Supabase client using the service_role key.
+    """Return the trusted service-role database client."""
+    if (
+        not SUPABASE_URL
+        or not SUPABASE_SERVICE_ROLE_KEY
+    ):
+        raise ValueError(
+            "Missing Supabase service credentials in .env"
+        )
 
-    We use service_role (not anon) here because this is backend code —
-    it needs full access to read/write on behalf of any user, bypassing
-    Row Level Security. RLS is what protects users from each other when
-    THEY query the database directly (e.g. from a frontend using the
-    anon key) — our backend is trusted, so it doesn't need that restriction.
-    """
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise ValueError("Missing Supabase credentials in .env")
+    return create_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+    )
 
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+def get_supabase_auth_client() -> Client:
+    """Return a public-key client for Auth operations."""
+    if (
+        not SUPABASE_URL
+        or not SUPABASE_PUBLIC_KEY
+    ):
+        raise ValueError(
+            "Missing Supabase public Auth credentials in .env"
+        )
+
+    return create_client(
+        SUPABASE_URL,
+        SUPABASE_PUBLIC_KEY,
+    )

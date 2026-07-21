@@ -118,3 +118,24 @@ class TaskStatusResponse(BaseModel):
     successful: bool | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+
+class MagicLinkRequest(BaseModel):
+    """Email address requesting passwordless authentication."""
+
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+    )
+
+
+class MagicLinkResponse(BaseModel):
+    """Generic response that prevents account enumeration."""
+
+    message: str
+
+
+class AuthenticatedUser(BaseModel):
+    """Trusted user returned after JWT validation."""
+
+    id: UUID
+    email: str | None = None

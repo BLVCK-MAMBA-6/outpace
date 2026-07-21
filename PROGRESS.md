@@ -14,10 +14,13 @@ Last updated: _21/07/2026_
 - [x] Database schema deployed (001_initial_schema.sql run in Supabase)
 - [x] `.env` filled with real Supabase + Gemini keys
 - [x] FastAPI app runs locally (`main.py` boots without errors)
-- [ ] Supabase Auth wired up (magic link)
+- [ ] Supabase Auth wired up end-to-end (real emailed magic-link frontend callback pending)
+- [x] FastAPI validates Supabase Bearer access tokens
+- [x] Competitor, brief, pipeline, and task endpoints require authentication
+- [x] Database queries and Celery task results are scoped to the authenticated user
 
 ## Known Shortcuts (fix before real users)
-- [ ] competitors.py uses a hardcoded PLACEHOLDER_USER_ID — needs real Supabase Auth wired in before multi-user support works
+- [x] Removed hardcoded `PLACEHOLDER_USER_ID` from API endpoints — resolved 21/07/2026
 
 ### Signal Type 1 — General Website Monitoring
 - [x] Playwright scraper fetches a competitor homepage
@@ -31,8 +34,8 @@ Last updated: _21/07/2026_
 - [x] Pricing page scraper built
 - [x] Structured extraction (plan name, price, features → JSON)
 - [x] Schema diff logic (catches changes even through redesigns)
-- [ ] Pricing-specific synthesis prompt
-- [ ] Tested on 1 real competitor's pricing page
+- [x] Pricing-specific synthesis prompt
+- [x] Tested on Rows pricing page with a controlled change
 
 ### Signal Type 3 — Reviews (G2 / Capterra)
 - [ ] Live review provider integration (G2 token works, but account currently returns no entitled products)
@@ -387,6 +390,38 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - Swagger successfully loaded and executed requests through the Codespaces URL.
 
 **Known limitation:** API requests still use a hardcoded placeholder user identity and must remain private until Supabase Auth protects the endpoints.
+
+---
+
+### 21/07/2026 — Supabase authentication boundary established
+
+**Decision:** Use Supabase Auth access tokens for API authentication while retaining the service-role client exclusively for trusted backend database and worker operations.
+
+**Implementation:**
+
+- Added a public Supabase client for authentication operations.
+- Added `POST /auth/magic-link` for requesting email sign-in links.
+- Added protected `GET /auth/me` for resolving the authenticated user.
+- FastAPI validates Bearer access tokens through Supabase Auth.
+- Removed every API use of the hardcoded `PLACEHOLDER_USER_ID`.
+- Competitor and brief queries are scoped to the authenticated user.
+- Pipeline execution verifies competitor or monitoring-source ownership.
+- Celery task IDs are recorded in `monitoring_tasks` with their owner.
+- Task-status results are returned only to the owning user.
+
+**Verified result:**
+
+- An unauthenticated competitor request returned `401`.
+- A valid Supabase session returned the existing authenticated user ID.
+- The authenticated user retained access to Hex, Rows, and Julius AI.
+- Authenticated competitor and brief requests returned `200`.
+- An authenticated pipeline request returned `no_changes`.
+- An authenticated monitoring request queued successfully with `202`.
+- The owned Celery task completed with `SUCCESS`.
+- An unknown or unowned task ID returned `404`.
+- All protected OpenAPI operations advertise Bearer authentication.
+
+**Remaining work:** Build the frontend login and `/auth/callback` route, configure its redirect URL in Supabase, and complete a real emailed magic-link sign-in before marking Supabase Auth fully complete.
 
 ---
 
