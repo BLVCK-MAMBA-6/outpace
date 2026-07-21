@@ -164,7 +164,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--signal-type",
         default="general",
-        choices=["general", "pricing", "reviews", "jobs"],
+        choices=[
+            "general",
+            "pricing",
+            "reviews",
+            "jobs",
+            "news",
+        ],
     )
 
     return parser.parse_args()

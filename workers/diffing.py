@@ -885,6 +885,270 @@ def compare_job_snapshots(
     }
 
 
+
+# ============================================================
+# NEWS AND PRESS DIFFING
+# ============================================================
+
+def news_article_map(
+    articles: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Index normalized news articles by stable article ID."""
+    article_map: dict[str, dict[str, Any]] = {}
+
+    for article in articles:
+        if not isinstance(article, dict):
+            raise ValueError(
+                "Every news article must be an object"
+            )
+
+        article_id = str(
+            article.get("id", "")
+        ).strip()
+
+        if not article_id:
+            raise ValueError(
+                "Every news article must have an id"
+            )
+
+        if article_id in article_map:
+            raise ValueError(
+                f"Duplicate news article id: {article_id}"
+            )
+
+        article_map[article_id] = article
+
+    return article_map
+
+
+def comparable_news_article(
+    article: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Return article fields that represent meaningful content.
+
+    matched_keywords is compared separately because keyword
+    configuration can change without the article changing.
+    """
+    comparable_fields = (
+        "title",
+        "summary",
+        "author",
+        "section",
+        "published_at",
+        "modified_at",
+    )
+
+    return {
+        field: article.get(field)
+        for field in comparable_fields
+    }
+
+
+def changed_news_article_fields(
+    old_article: dict[str, Any],
+    new_article: dict[str, Any],
+) -> list[str]:
+    """Return meaningful fields changed on an existing article."""
+    old_comparable = comparable_news_article(old_article)
+    new_comparable = comparable_news_article(new_article)
+
+    return [
+        field
+        for field in old_comparable
+        if old_comparable.get(field)
+        != new_comparable.get(field)
+    ]
+
+
+def article_keyword_set(
+    article: dict[str, Any],
+) -> set[str]:
+    """Return normalized configured keyword matches."""
+    keywords = article.get("matched_keywords") or []
+
+    if not isinstance(keywords, list):
+        return set()
+
+    return {
+        str(keyword).strip()
+        for keyword in keywords
+        if str(keyword).strip()
+    }
+
+
+def compare_news_snapshots(
+    old_content: dict[str, Any],
+    new_content: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Compare structured news and press snapshots.
+
+    Articles disappearing from a listing are recorded, but do not
+    trigger a brief by themselves. Blog index pages often use rolling
+    windows, so disappearance does not prove an article was deleted.
+    """
+    old_articles = old_content.get("articles") or []
+    new_articles = new_content.get("articles") or []
+
+    if not isinstance(old_articles, list):
+        raise ValueError(
+            "Old news snapshot raw_content.articles must be a list"
+        )
+
+    if not isinstance(new_articles, list):
+        raise ValueError(
+            "New news snapshot raw_content.articles must be a list"
+        )
+
+    old_map = news_article_map(old_articles)
+    new_map = news_article_map(new_articles)
+
+    old_ids = set(old_map)
+    new_ids = set(new_map)
+
+    added_ids = sorted(new_ids - old_ids)
+    removed_ids = sorted(old_ids - new_ids)
+    shared_ids = sorted(old_ids & new_ids)
+
+    articles_added = [
+        new_map[article_id]
+        for article_id in added_ids
+    ]
+
+    articles_removed_from_listing = [
+        old_map[article_id]
+        for article_id in removed_ids
+    ]
+
+    articles_updated = []
+    new_keyword_matches = []
+    changes = []
+
+    for article in articles_added:
+        changes.append(
+            {
+                "type": "article_added",
+                "article_id": article["id"],
+                "article": article,
+            }
+        )
+
+        matched_keywords = sorted(
+            article_keyword_set(article),
+            key=str.casefold,
+        )
+
+        if matched_keywords:
+            new_keyword_matches.append(
+                {
+                    "article_id": article["id"],
+                    "newly_matched_keywords": matched_keywords,
+                    "article": article,
+                }
+            )
+
+    for article in articles_removed_from_listing:
+        changes.append(
+            {
+                "type": "article_removed_from_listing",
+                "article_id": article["id"],
+                "article": article,
+                "meaningful": False,
+            }
+        )
+
+    for article_id in shared_ids:
+        old_article = old_map[article_id]
+        new_article = new_map[article_id]
+
+        changed_fields = changed_news_article_fields(
+            old_article=old_article,
+            new_article=new_article,
+        )
+
+        if changed_fields:
+            update = {
+                "article_id": article_id,
+                "changed_fields": changed_fields,
+                "old": old_article,
+                "new": new_article,
+            }
+
+            articles_updated.append(update)
+
+            changes.append(
+                {
+                    "type": "article_updated",
+                    **update,
+                }
+            )
+
+        newly_matched_keywords = sorted(
+            article_keyword_set(new_article)
+            - article_keyword_set(old_article),
+            key=str.casefold,
+        )
+
+        if newly_matched_keywords:
+            new_keyword_matches.append(
+                {
+                    "article_id": article_id,
+                    "newly_matched_keywords": newly_matched_keywords,
+                    "article": new_article,
+                }
+            )
+
+    old_keyword_match_count = sum(
+        bool(article_keyword_set(article))
+        for article in old_articles
+    )
+
+    new_keyword_match_count = sum(
+        bool(article_keyword_set(article))
+        for article in new_articles
+    )
+
+    meaningful_change_count = (
+        len(articles_added)
+        + len(articles_updated)
+    )
+
+    return {
+        "has_changes": meaningful_change_count > 0,
+        "old_article_count": len(old_articles),
+        "new_article_count": len(new_articles),
+        "article_count_delta": (
+            len(new_articles) - len(old_articles)
+        ),
+        "articles_added": articles_added,
+        "articles_updated": articles_updated,
+        "articles_removed_from_listing": (
+            articles_removed_from_listing
+        ),
+        "listing_removal_count": len(
+            articles_removed_from_listing
+        ),
+        "old_keyword_match_count": old_keyword_match_count,
+        "new_keyword_match_count": new_keyword_match_count,
+        "keyword_match_count_delta": (
+            new_keyword_match_count
+            - old_keyword_match_count
+        ),
+        "new_keyword_matches": new_keyword_matches,
+        "new_keyword_match_event_count": len(
+            new_keyword_matches
+        ),
+        "meaningful_change_count": meaningful_change_count,
+        "change_count": len(changes),
+        "test_fixture": bool(
+            old_content.get("test_fixture")
+            or new_content.get("test_fixture")
+        ),
+        "changes": changes,
+    }
+
+
 # ============================================================
 # DATABASE SNAPSHOT RETRIEVAL
 # ============================================================
@@ -973,6 +1237,21 @@ def compare_latest_snapshots(
             new_content=new_content,
         )
 
+    elif signal_type == "news":
+        if (
+            "articles" not in old_content
+            or "articles" not in new_content
+        ):
+            raise ValueError(
+                "One or both news snapshots do not contain "
+                "raw_content.articles"
+            )
+
+        diff = compare_news_snapshots(
+            old_content=old_content,
+            new_content=new_content,
+        )
+
     else:
         old_text = old_content.get("text", "")
         new_text = new_content.get("text", "")
@@ -1022,6 +1301,7 @@ def parse_arguments() -> argparse.Namespace:
             "pricing",
             "reviews",
             "jobs",
+            "news",
         ],
     )
 

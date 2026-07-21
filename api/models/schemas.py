@@ -1,74 +1,120 @@
 """
-schemas.py — Data Shape Definitions (Pydantic Models)
-========================================================
-These classes define the "shape" of data flowing in and out of our API.
-
-Why we need this: when a request hits our API (e.g. "add a new competitor"),
-FastAPI needs to know what fields to expect, which are required, and what
-type each one should be (string, UUID, etc). Pydantic handles all of this
-validation automatically — if someone sends bad data, FastAPI rejects it
-before our actual logic even runs.
-
-Think of these as "contracts" — they describe what a valid request/response
-looks like.
+Pydantic request and response contracts for the Outpace API.
 """
 
-from pydantic import BaseModel, HttpUrl
-from typing import Optional
-from uuid import UUID
 from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+)
 
 
-# ------------------------------------------------------------
-# COMPETITOR SCHEMAS
-# ------------------------------------------------------------
+SignalType = Literal[
+    "general",
+    "pricing",
+    "reviews",
+    "jobs",
+    "news",
+]
+
+BriefPriority = Literal[
+    "low",
+    "normal",
+    "high",
+    "urgent",
+]
+
 
 class CompetitorCreate(BaseModel):
-    """
-    Shape of data required when a user adds a NEW competitor.
-    This is what we expect in the request body of a POST request.
-    """
-    name: str                          # e.g. "Klue"
-    website_url: HttpUrl               # e.g. "https://klue.com" — HttpUrl validates it's a real URL format
-    pricing_url: Optional[HttpUrl] = None   # optional — user might add this later
+    """Create a competitor for the current MVP user."""
+
+    name: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+    website_url: HttpUrl
+    pricing_url: HttpUrl | None = None
+
+
+class CompetitorUpdate(BaseModel):
+    """Update supplied competitor fields."""
+
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    website_url: HttpUrl | None = None
+    pricing_url: HttpUrl | None = None
 
 
 class CompetitorResponse(BaseModel):
-    """
-    Shape of data we SEND BACK after a competitor is created or fetched.
-    Includes fields the database generates automatically (id, timestamps)
-    that the user never provides themselves.
-    """
+    """Competitor returned by the API."""
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
     id: UUID
     user_id: UUID
     name: str
     website_url: str
-    pricing_url: Optional[str] = None
+    pricing_url: str | None = None
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        # Allows this model to be built directly from a database row object,
-        # not just a plain dictionary.
-        from_attributes = True
-
-
-# ------------------------------------------------------------
-# BRIEF SCHEMAS
-# ------------------------------------------------------------
 
 class BriefResponse(BaseModel):
-    """
-    Shape of data we send back when a user views their briefs
-    (the AI-synthesized "here's what changed" insights).
-    """
+    """Stored competitive-intelligence brief."""
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
     id: UUID
     competitor_id: UUID
-    signal_type: str            # 'general', 'pricing', 'reviews', or 'jobs'
-    synthesis: dict             # the AI-generated JSON (summary, significance, recommended_action)
-    priority: str                # 'low', 'normal', 'high', or 'urgent'
+    signal_type: SignalType
+    synthesis: dict[str, Any]
+    priority: BriefPriority
     delivered: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+
+class PipelineRunRequest(BaseModel):
+    """Process the two latest stored snapshots."""
+
+    competitor_id: UUID
+    signal_type: SignalType = "general"
+
+
+class MonitoringEnqueueRequest(BaseModel):
+    """Queue collection plus pipeline processing."""
+
+    signal_type: SignalType
+    competitor_id: UUID | None = None
+    source_id: UUID | None = None
+
+
+class TaskQueuedResponse(BaseModel):
+    """Queued Celery task information."""
+
+    status: Literal["queued"]
+    task_id: str
+    signal_type: SignalType
+    target_id: UUID
+
+
+class TaskStatusResponse(BaseModel):
+    """Current state of a Celery task."""
+
+    task_id: str
+    state: str
+    ready: bool
+    successful: bool | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None

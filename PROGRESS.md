@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _18/07/2026_
+Last updated: _21/07/2026_
 
 ---
 
@@ -59,17 +59,22 @@ Last updated: _18/07/2026_
 - [ ] Natural real-world job addition/removal observed
 
 ### Signal Type 5 — News & Press
-- [ ] RSS feed monitoring set up
-- [ ] Keyword search wired up
-- [ ] Synthesis wired up
+- [x] Official blog/news page monitoring set up (HTML provider)
+- [ ] RSS/Atom feed ingestion (no feed exposed by current competitors)
+- [x] Configured keyword matching wired up
+- [ ] External web-wide keyword search
+- [x] News-specific diffing and synthesis wired up
+- [x] Brief storage and duplicate prevention tested
+- [x] Live stable baseline tested on Rows
 
 ### Infrastructure
-- [ ] Celery + Redis set up locally
-- [ ] Weekly scheduled job (general crawl)
-- [ ] 48-hour scheduled job (pricing crawl)
-- [ ] Resend email integration
-- [ ] Weekly digest email template built
-- [ ] Digest successfully sent to yourself (test)
+- [x] Celery + Redis set up locally
+- [x] Weekly scheduled job (general crawl)
+- [x] 48-hour scheduled job (pricing crawl)
+- [x] Resend email integration
+- [x] Weekly digest email template built
+- [x] Digest successfully sent to yourself (test)
+- [x] API and Swagger regression tested across database and Celery queue
 
 ### Frontend / Dashboard
 - [ ] Onboarding flow (add competitor, add pricing URL, add keywords)
@@ -273,6 +278,115 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - Two fresh Rows snapshots restored its latest comparison state to live data.
 
 **Follow-up:** Add Greenhouse and Lever adapters when a monitored competitor uses those systems. A natural live addition or removal has not yet been observed.
+
+---
+
+### 19/07/2026 — Official HTML sources used for news monitoring
+
+**Decision:** Monitor official competitor blog and newsroom pages through a structured HTML provider when RSS or Atom feeds are unavailable.
+
+**Reason:** Common RSS and Atom endpoints tested for Rows and Hex did not expose valid feeds. Rows' official blog is publicly accessible and exposes stable article URLs, titles, and summaries.
+
+**Implementation:**
+
+- Article IDs are derived from stable canonical URLs.
+- Structured fields include title, summary, author, section, publication metadata when available, URL, and matched keywords.
+- Added and meaningfully updated articles can trigger briefs.
+- Articles disappearing from a rolling listing are recorded but do not trigger a brief by themselves.
+- Keyword matching uses configured terms against collected official article content.
+
+**Live verification:**
+
+- Rows' official blog returned 10 real articles.
+- Eight articles matched at least one configured keyword.
+- Two consecutive live collections produced identical structured snapshots with no false changes.
+- All live snapshots were marked `test_fixture: false`.
+- Rows did not expose publication dates in the metadata inspected, so those fields remain null rather than being invented.
+
+**Controlled verification:**
+
+- A labeled synthetic article tested addition detection and keyword matching.
+- Gemini generated a news-specific brief with `low` priority and `0.25` confidence.
+- The brief was stored in Supabase.
+- A repeated pipeline run returned `already_stored`.
+- Two fresh live collections restored the active Rows comparison baseline.
+
+**Follow-up:** Implement RSS/Atom ingestion when a monitored source exposes a valid feed. Configured keyword matching is complete, but external web-wide keyword search remains a separate unimplemented feature.
+
+---
+
+### 19/07/2026 — Celery and Redis scheduling established
+
+**Decision:** Use Celery workers with Redis as the local task broker and Celery Beat for recurring monitoring schedules.
+
+**Schedules:**
+
+- General homepage monitoring: every Monday at 06:00 UTC.
+- Pricing monitoring: every 48 hours.
+- Review monitoring: daily at 07:00 UTC.
+- Job monitoring: every 12 hours.
+- News monitoring: every 6 hours.
+
+**Safety rules:**
+
+- Scheduled fan-out creates one task per enabled competitor or source.
+- Manual fixture sources are excluded from recurring automation.
+- Competitors listed in `MONITORING_EXCLUDED_COMPETITOR_IDS` are skipped.
+- Julius AI is locally excluded while its Cloudflare blocker remains unresolved.
+- Celery results contain compact IDs and statuses rather than full snapshots and raw diffs.
+
+**Verified result:**
+
+- Redis returned `PONG`.
+- The Celery worker registered all ten Outpace tasks.
+- A real queued Rows news task stored a live snapshot and returned `no_changes`.
+- The news fan-out task discovered one enabled HTML source and executed its child task.
+- Celery Beat started successfully using the configured recurring schedule.
+
+---
+
+### 19/07/2026 — Weekly digest delivery established
+
+**Decision:** Use Resend for the MVP weekly competitive-intelligence digest.
+
+**Implementation:**
+
+- Responsive HTML and plain-text email versions.
+- Briefs grouped into cards with competitor, signal type, priority, summary, significance, action, and evidence.
+- Real sends select only undelivered briefs for the configured MVP user.
+- Synthetic fixture briefs are excluded from production digests.
+- Briefs are marked delivered only after a successful real send.
+- Celery Beat schedules delivery for Monday at 08:00 UTC, after the Monday general crawl.
+
+**Verified result:**
+
+- A controlled test digest was accepted by Resend.
+- Resend email ID: `11f00269-d1c2-4f9d-9b92-5d994c3eda8c`.
+- The message arrived successfully and rendered correctly on mobile Gmail.
+- A queued production digest task returned `no_briefs` because only synthetic briefs were available, confirming fixture exclusion.
+
+**Follow-up:** Replace environment-based recipient mapping with authenticated user email addresses when Supabase Auth is implemented. Verify a custom sending domain before sending digests to beta users.
+
+---
+
+### 20/07/2026 — Five-signal API and Swagger regression passed
+
+**Decision:** Expose typed API endpoints for competitor management, brief retrieval, synchronous pipeline processing, Celery monitoring enqueueing, and task-status polling.
+
+**Verified result:**
+
+- OpenAPI version `0.2.0` generated successfully with nine paths.
+- Health endpoint returned `200`.
+- Competitor list and detail endpoints returned `200`.
+- Brief filtering by the `news` signal returned `200`.
+- The synchronous news pipeline returned `no_changes`.
+- The asynchronous news endpoint returned `202` and queued a real Celery task.
+- Task-status polling returned `SUCCESS`.
+- Invalid signal validation returned `422`.
+- A missing competitor returned `404`.
+- Swagger successfully loaded and executed requests through the Codespaces URL.
+
+**Known limitation:** API requests still use a hardcoded placeholder user identity and must remain private until Supabase Auth protects the endpoints.
 
 ---
 
