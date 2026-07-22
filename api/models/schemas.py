@@ -22,6 +22,17 @@ SignalType = Literal[
     "news",
 ]
 
+SourceHealthStatus = Literal[
+    "unconfigured",
+    "disabled",
+    "pending",
+    "healthy",
+    "degraded",
+    "blocked",
+    "unsupported",
+    "failed",
+]
+
 BriefPriority = Literal[
     "low",
     "normal",
@@ -81,6 +92,13 @@ class MonitoringSignalStatus(BaseModel):
     last_polled_at: datetime | None = None
     latest_snapshot_id: UUID | None = None
     latest_snapshot_at: datetime | None = None
+    health_status: SourceHealthStatus
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_failure_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    consecutive_failures: int = 0
 
 
 class CompetitorMonitoringResponse(BaseModel):
@@ -88,6 +106,66 @@ class CompetitorMonitoringResponse(BaseModel):
 
     competitor: CompetitorResponse
     signals: list[MonitoringSignalStatus]
+
+
+class JobSourceCreate(BaseModel):
+    """Configure one supported public careers source."""
+
+    provider: Literal["html", "github", "ashby"]
+    source_url: HttpUrl
+    board_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    job_link_path: str = Field(
+        default="/careers/",
+        min_length=1,
+        max_length=500,
+    )
+    branch: str = Field(
+        default="main",
+        min_length=1,
+        max_length=200,
+    )
+    readme_path: str = Field(
+        default="README.md",
+        min_length=1,
+        max_length=500,
+    )
+
+
+class NewsSourceCreate(BaseModel):
+    """Configure one supported public news or blog source."""
+
+    provider: Literal["html"] = "html"
+    source_url: HttpUrl
+    article_link_path: str = Field(
+        default="/blog/post/",
+        min_length=1,
+        max_length=500,
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        max_length=25,
+    )
+    max_articles: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+    )
+
+
+class MonitoringSourceResponse(BaseModel):
+    """Stored source used to queue a monitoring baseline."""
+
+    id: UUID
+    competitor_id: UUID
+    signal_type: Literal["jobs", "news"]
+    provider: str
+    source_url: str
+    enabled: bool
 
 
 class BriefResponse(BaseModel):

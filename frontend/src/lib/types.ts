@@ -46,6 +46,16 @@ export type SignalType =
   | 'jobs'
   | 'news'
 
+export type SourceHealthStatus =
+  | 'unconfigured'
+  | 'disabled'
+  | 'pending'
+  | 'healthy'
+  | 'degraded'
+  | 'blocked'
+  | 'unsupported'
+  | 'failed'
+
 export type MonitoringSignalStatus = {
   signal_type: SignalType
   configured: boolean
@@ -56,11 +66,44 @@ export type MonitoringSignalStatus = {
   last_polled_at: string | null
   latest_snapshot_id: string | null
   latest_snapshot_at: string | null
+  health_status: SourceHealthStatus
+  last_attempt_at: string | null
+  last_success_at: string | null
+  last_failure_at: string | null
+  last_error_code: string | null
+  last_error_message: string | null
+  consecutive_failures: number
 }
 
 export type CompetitorMonitoring = {
   competitor: Competitor
   signals: MonitoringSignalStatus[]
+}
+
+export type MonitoringSource = {
+  id: string
+  competitor_id: string
+  signal_type: 'jobs' | 'news'
+  provider: string
+  source_url: string
+  enabled: boolean
+}
+
+export type JobSourceCreate = {
+  provider: 'html' | 'github' | 'ashby'
+  source_url: string
+  board_name?: string
+  job_link_path?: string
+  branch?: string
+  readme_path?: string
+}
+
+export type NewsSourceCreate = {
+  provider: 'html'
+  source_url: string
+  article_link_path?: string
+  keywords?: string[]
+  max_articles?: number
 }
 
 export type TaskQueued = {

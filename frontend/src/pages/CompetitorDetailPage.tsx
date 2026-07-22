@@ -8,6 +8,8 @@ import {
   useParams,
 } from 'react-router-dom'
 
+import '../styles/source-health.css'
+
 import {
   BriefDetailPanel,
 } from '../components/BriefDetailPanel'
@@ -60,6 +62,17 @@ const signalDetails: Record<
     description: 'Announcements and market narrative',
   },
 }
+
+const healthLabels = {
+  unconfigured: 'Needs source',
+  disabled: 'Disabled',
+  pending: 'Awaiting baseline',
+  healthy: 'Healthy',
+  degraded: 'Degraded',
+  blocked: 'Access blocked',
+  unsupported: 'Unsupported',
+  failed: 'Check failed',
+} as const
 
 type TaskFeedback = {
   state: 'running' | 'success' | 'error'
@@ -257,6 +270,7 @@ export function CompetitorDetailPage() {
               : 'Monitoring could not be started',
         },
       }))
+      setRefreshKey((current) => current + 1)
     }
   }
 
@@ -383,6 +397,9 @@ export function CompetitorDetailPage() {
               signal.configured &&
               signal.enabled &&
               !fixture
+            const healthClass = fixture
+              ? 'fixture'
+              : signal.health_status
 
             return (
               <article
@@ -404,23 +421,11 @@ export function CompetitorDetailPage() {
 
                 <div className="signal-control-row__status">
                   <span
-                    className={
-                      `signal-state ${
-                        fixture
-                          ? 'signal-state--fixture'
-                          : runnable
-                            ? 'signal-state--active'
-                            : 'signal-state--missing'
-                      }`
-                    }
+                    className={`signal-state signal-state--${healthClass}`}
                   >
                     {fixture
                       ? 'Test fixture'
-                      : runnable
-                        ? 'Active'
-                        : signal.configured
-                          ? 'Disabled'
-                          : 'Needs source'}
+                      : healthLabels[signal.health_status]}
                   </span>
                   <p>
                     Latest snapshot
@@ -428,6 +433,24 @@ export function CompetitorDetailPage() {
                       {formatDate(signal.latest_snapshot_at)}
                     </strong>
                   </p>
+                  {signal.last_error_message &&
+                    signal.health_status !== 'healthy' && (
+                      <p
+                        className="source-health-error"
+                        title={signal.last_error_message}
+                      >
+                        {signal.last_error_message}
+                      </p>
+                    )}
+                  {signal.consecutive_failures > 0 && (
+                    <small className="source-health-failures">
+                      {signal.consecutive_failures}{' '}
+                      consecutive failure
+                      {signal.consecutive_failures === 1
+                        ? ''
+                        : 's'}
+                    </small>
+                  )}
                 </div>
 
                 <div className="signal-control-row__brief">

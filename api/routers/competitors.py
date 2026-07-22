@@ -3,6 +3,7 @@ Authenticated competitor management endpoints.
 """
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +15,9 @@ from api.models.schemas import (
     CompetitorMonitoringResponse,
     CompetitorResponse,
     CompetitorUpdate,
+    JobSourceCreate,
+    MonitoringSourceResponse,
+    NewsSourceCreate,
 )
 from api.utils.supabase_client import get_supabase_client
 
@@ -214,6 +218,22 @@ def get_competitor_monitoring(
                 else None
             )
 
+        health_result = (
+            supabase.table("monitoring_source_health")
+            .select(
+                "signal_type,status,last_attempt_at,"
+                "last_success_at,last_failure_at,"
+                "last_error_code,last_error_message,"
+                "consecutive_failures"
+            )
+            .eq("competitor_id", competitor_id_value)
+            .execute()
+        )
+        health_rows = {
+            row["signal_type"]: row
+            for row in health_result.data or []
+        }
+
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -228,6 +248,7 @@ def get_competitor_monitoring(
     for signal_type in SIGNAL_TYPES:
         source = source_rows.get(signal_type)
         snapshot = latest_snapshots.get(signal_type)
+        health = health_rows.get(signal_type)
 
         if signal_type == "general":
             configured = True
@@ -271,6 +292,17 @@ def get_competitor_monitoring(
                 else None
             )
 
+        if not configured:
+            health_status = "unconfigured"
+        elif not enabled:
+            health_status = "disabled"
+        elif health:
+            health_status = health["status"]
+        elif snapshot:
+            health_status = "healthy"
+        else:
+            health_status = "pending"
+
         signals.append(
             {
                 "signal_type": signal_type,
@@ -290,6 +322,41 @@ def get_competitor_monitoring(
                     if snapshot
                     else None
                 ),
+                "health_status": health_status,
+                "last_attempt_at": (
+                    health.get("last_attempt_at")
+                    if health
+                    else None
+                ),
+                "last_success_at": (
+                    health.get("last_success_at")
+                    if health
+                    else (
+                        snapshot.get("scraped_at")
+                        if snapshot
+                        else None
+                    )
+                ),
+                "last_failure_at": (
+                    health.get("last_failure_at")
+                    if health
+                    else None
+                ),
+                "last_error_code": (
+                    health.get("last_error_code")
+                    if health
+                    else None
+                ),
+                "last_error_message": (
+                    health.get("last_error_message")
+                    if health
+                    else None
+                ),
+                "consecutive_failures": int(
+                    health.get("consecutive_failures", 0)
+                    if health
+                    else 0
+                ),
             }
         )
 
@@ -297,6 +364,261 @@ def get_competitor_monitoring(
         "competitor": competitor,
         "signals": signals,
     }
+
+
+def _source_response(
+    row: dict,
+    signal_type: str,
+) -> dict:
+    """Map a provider row to the public source response."""
+    return {
+        "id": row["id"],
+        "competitor_id": row["competitor_id"],
+        "signal_type": signal_type,
+        "provider": row["source"],
+        "source_url": row["source_url"],
+        "enabled": row["enabled"],
+    }
+
+
+@router.post(
+    "/{competitor_id}/sources/jobs",
+    response_model=MonitoringSourceResponse,
+    status_code=201,
+)
+def configure_job_source(
+    competitor_id: UUID,
+    source: JobSourceCreate,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
+):
+    """Configure the supported careers source for a competitor."""
+    competitor_id_value = str(competitor_id)
+    competitor = _get_owned_competitor(
+        competitor_id=competitor_id_value,
+        user_id=str(current_user.id),
+    )
+    source_url = str(source.source_url)
+    metadata = {
+        "company_name": competitor["name"],
+    }
+    external_source_id = None
+
+    if source.provider == "github":
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        path_parts = [
+            part
+            for part in parsed.path.strip("/").split("/")
+            if part
+        ]
+
+        if host not in {"github.com", "www.github.com"} or len(
+            path_parts
+        ) < 2:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "GitHub careers source must be a public "
+                    "github.com owner/repository URL"
+                ),
+            )
+
+        owner = path_parts[0]
+        repo = path_parts[1].removesuffix(".git")
+        external_source_id = f"{owner}/{repo}"
+        metadata.update(
+            {
+                "owner": owner,
+                "repo": repo,
+                "branch": source.branch.strip(),
+                "readme_path": source.readme_path.strip(),
+            }
+        )
+    elif source.provider == "ashby":
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        path_parts = [
+            part
+            for part in parsed.path.strip("/").split("/")
+            if part
+        ]
+        board_name = (
+            source.board_name.strip()
+            if source.board_name
+            else (
+                path_parts[0]
+                if host in {
+                    "jobs.ashbyhq.com",
+                    "www.jobs.ashbyhq.com",
+                } and path_parts
+                else ""
+            )
+        )
+
+        if not board_name:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Ashby sources require a jobs.ashbyhq.com "
+                    "board URL or board_name"
+                ),
+            )
+
+        external_source_id = board_name
+        metadata["board_name"] = board_name
+
+    else:
+        metadata["job_link_path"] = (
+            source.job_link_path.strip()
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "competitor_id": competitor_id_value,
+        "source": source.provider,
+        "external_source_id": external_source_id,
+        "source_url": source_url,
+        "enabled": True,
+        "metadata": metadata,
+        "updated_at": now,
+    }
+
+    try:
+        result = (
+            supabase.table("job_sources")
+            .upsert(
+                row,
+                on_conflict="competitor_id,source",
+            )
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                "Database returned no job source"
+            )
+
+        stored = result.data[0]
+
+        (
+            supabase.table("job_sources")
+            .update(
+                {
+                    "enabled": False,
+                    "updated_at": now,
+                }
+            )
+            .eq("competitor_id", competitor_id_value)
+            .neq("id", stored["id"])
+            .execute()
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to configure job source: {error}",
+        ) from error
+
+    return _source_response(
+        stored,
+        "jobs",
+    )
+
+
+@router.post(
+    "/{competitor_id}/sources/news",
+    response_model=MonitoringSourceResponse,
+    status_code=201,
+)
+def configure_news_source(
+    competitor_id: UUID,
+    source: NewsSourceCreate,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
+):
+    """Configure one supported official blog or newsroom source."""
+    competitor_id_value = str(competitor_id)
+    competitor = _get_owned_competitor(
+        competitor_id=competitor_id_value,
+        user_id=str(current_user.id),
+    )
+    source_url = str(source.source_url)
+    keywords = []
+    seen_keywords = set()
+
+    for keyword in source.keywords:
+        normalized = keyword.strip()
+        comparison_key = normalized.casefold()
+
+        if normalized and comparison_key not in seen_keywords:
+            keywords.append(normalized)
+            seen_keywords.add(comparison_key)
+
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "competitor_id": competitor_id_value,
+        "source": source.provider,
+        "external_source_id": None,
+        "source_url": source_url,
+        "enabled": True,
+        "keywords": keywords,
+        "metadata": {
+            "company_name": competitor["name"],
+            "article_link_path": (
+                source.article_link_path.strip()
+            ),
+            "max_articles": source.max_articles,
+        },
+        "updated_at": now,
+    }
+
+    try:
+        result = (
+            supabase.table("news_sources")
+            .upsert(
+                row,
+                on_conflict=(
+                    "competitor_id,source,source_url"
+                ),
+            )
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                "Database returned no news source"
+            )
+
+        stored = result.data[0]
+
+        (
+            supabase.table("news_sources")
+            .update(
+                {
+                    "enabled": False,
+                    "updated_at": now,
+                }
+            )
+            .eq("competitor_id", competitor_id_value)
+            .neq("id", stored["id"])
+            .execute()
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to configure news source: {error}",
+        ) from error
+
+    return _source_response(
+        stored,
+        "news",
+    )
 
 
 @router.patch(

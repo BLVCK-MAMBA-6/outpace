@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _21/07/2026_
+Last updated: _22/07/2026_
 
 ---
 
@@ -14,7 +14,7 @@ Last updated: _21/07/2026_
 - [x] Database schema deployed (001_initial_schema.sql run in Supabase)
 - [x] `.env` filled with real Supabase + Gemini keys
 - [x] FastAPI app runs locally (`main.py` boots without errors)
-- [ ] Supabase Auth wired up end-to-end (real emailed magic-link frontend callback pending)
+- [x] Supabase Auth wired up end-to-end with emailed magic-link callback
 - [x] FastAPI validates Supabase Bearer access tokens
 - [x] Competitor, brief, pipeline, and task endpoints require authentication
 - [x] Database queries and Celery task results are scoped to the authenticated user
@@ -50,16 +50,18 @@ Last updated: _21/07/2026_
 - [x] `job_sources` configuration table created
 - [x] Public GitHub careers provider built
 - [x] Public HTML careers provider built
+- [x] Public Ashby job-board provider built
 - [x] Structured job snapshots stored in `snapshots` table
 - [x] Zero-opening live baseline tested on Rows
 - [x] Active live-job ingestion tested on Hex (26 real openings)
+- [x] Active Ashby ingestion tested on Harvey AI (344 real openings)
 - [x] Stable live job identifiers verified across repeated collections
 - [x] Department, location, and remote signals extracted
 - [x] New, removed, and updated job detection implemented
 - [x] Job-specific Gemini synthesis wired up
 - [x] Controlled job brief stored in `briefs` table
 - [x] Duplicate brief prevention tested
-- [ ] Natural real-world job addition/removal observed
+- [x] Natural real-world job addition/removal observed
 
 ### Signal Type 5 — News & Press
 - [x] Official blog/news page monitoring set up (HTML provider)
@@ -78,11 +80,16 @@ Last updated: _21/07/2026_
 - [x] Weekly digest email template built
 - [x] Digest successfully sent to yourself (test)
 - [x] API and Swagger regression tested across database and Celery queue
+- [x] Unified source-health recording added across all five signals
+- [x] Blocked, unsupported, degraded, and failed sources classified separately
 
 ### Frontend / Dashboard
-- [ ] Onboarding flow (add competitor, add pricing URL, add keywords)
-- [ ] Dashboard showing last 4 weeks of briefs
-- [ ] Deployed to Vercel (or still local — note which)
+- [x] Authenticated onboarding flow for competitors and supported sources
+- [x] Dashboard showing user-scoped competitors and intelligence briefs
+- [x] Competitor workspace with per-signal collection controls and brief history
+- [x] Brief detail drawer with evidence, significance, action, and confidence
+- [x] Source-health state and failure reason displayed per monitoring surface
+- [ ] Production deployment (currently verified through GitHub Codespaces)
 
 ### Billing (can be stubbed/skipped until real users)
 - [ ] Stripe test mode integrated
@@ -90,8 +97,8 @@ Last updated: _21/07/2026_
 
 ### Beta Prep
 - [ ] Error handling + Sentry wired up
-- [ ] Tested with 2–3 real competitors, not just 1
-- [ ] Onboarded yourself as first user
+- [x] Tested with Rows, Hex, and Harvey AI
+- [x] Onboarded yourself as first authenticated user
 - [ ] Onboarded 2–3 friendly beta testers
 - [ ] Collected first round of feedback
 
@@ -141,7 +148,7 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 
 **Reason:** Authentication was not required to prove that competitor creation, monitoring, synthesis, and brief storage worked end-to-end.
 
-**Follow-up:** Replace the placeholder with the authenticated Supabase user before onboarding real or multiple users.
+**Resolved:** Replaced the placeholder identity with authenticated Supabase users on 21/07/2026. This entry remains as historical context for the original MVP shortcut.
 
 ---
 
@@ -284,6 +291,46 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 
 ---
 
+### 22/07/2026 — Ashby careers provider established
+
+**Decision:** Prefer an official public applicant-tracking-system API over scraping a client-rendered careers page.
+
+**Reason:** Harvey AI's official careers page displayed jobs in a browser, but its server response contained only a loading state. Headless rendering did not hydrate reliably, and its sitemap exposed no job URLs. Harvey's public Ashby board supplied stable structured data without bypassing access controls.
+
+**Implementation:**
+
+- Added a reusable Ashby provider keyed by public board name.
+- Normalized stable job IDs, titles, departments, locations, employment type, workplace type, URLs, descriptions, and publication timestamps.
+- Correctly prioritized Ashby's `workplaceType` over its broader `isRemote` flag so hybrid roles are not flattened into remote roles.
+
+**Verified result:**
+
+- Harvey AI returned 344 real openings across 16 departments and 18 locations.
+- Twenty-three roles were classified as remote; 282 retained their more precise hybrid classification.
+- Two immediate live snapshots contained the same 344 stable roles.
+- The diff reported `has_changes: false` and `test_fixture: false`.
+
+---
+
+### 22/07/2026 — Source reliability treated as product infrastructure
+
+**Decision:** Track source collection health separately from competitive changes.
+
+**Reason:** Access blocks, provider entitlements, client-rendered pages, temporary network failures, and newly discovered provider formats are normal characteristics of external monitoring. They must not become empty snapshots, false competitor events, or opaque worker failures.
+
+**Implementation:**
+
+- Added one health record per competitor and signal.
+- Records last attempt, success, failure, sanitized error, and consecutive failure count.
+- Classifies failures as `blocked`, `unsupported`, `degraded`, or `failed`.
+- Successful snapshot insertion resets the source to `healthy`.
+- The authenticated competitor API and workspace expose operational health without replacing the last good evidence baseline.
+- Added `docs/SOURCE_RELIABILITY.md` and `docs/PROVIDER_MATRIX.md`.
+
+**Safety rule:** A collection failure never inserts an empty snapshot. Cloudflare, CAPTCHA, authentication, and entitlement controls are not bypassed.
+
+---
+
 ### 19/07/2026 — Official HTML sources used for news monitoring
 
 **Decision:** Monitor official competitor blog and newsroom pages through a structured HTML provider when RSS or Atom feeds are unavailable.
@@ -389,7 +436,7 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - A missing competitor returned `404`.
 - Swagger successfully loaded and executed requests through the Codespaces URL.
 
-**Known limitation:** API requests still use a hardcoded placeholder user identity and must remain private until Supabase Auth protects the endpoints.
+**Resolved:** Supabase bearer authentication and user-scoped API access were added on 21/07/2026.
 
 ---
 
@@ -421,7 +468,7 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - An unknown or unowned task ID returned `404`.
 - All protected OpenAPI operations advertise Bearer authentication.
 
-**Remaining work:** Build the frontend login and `/auth/callback` route, configure its redirect URL in Supabase, and complete a real emailed magic-link sign-in before marking Supabase Auth fully complete.
+**Completed:** The frontend login and `/auth/callback` flow were built, the redirect URL was configured, and a real emailed magic-link session successfully loaded the authenticated dashboard.
 
 ---
 

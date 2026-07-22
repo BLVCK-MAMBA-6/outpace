@@ -7,6 +7,7 @@ enqueue one monitoring task per target.
 
 import asyncio
 import os
+from collections.abc import Callable
 from typing import Any
 
 from api.utils.supabase_client import get_supabase_client
@@ -18,6 +19,12 @@ from workers.scrapers.jobs import collect_jobs
 from workers.scrapers.news import collect_news
 from workers.scrapers.pricing import scrape_pricing
 from workers.scrapers.reviews import collect_reviews
+from workers.source_health import (
+    get_source_context,
+    record_source_attempt,
+    record_source_failure,
+    record_source_success,
+)
 
 
 def excluded_competitor_ids() -> set[str]:
@@ -62,6 +69,63 @@ def summarize_pipeline(
         summary["model"] = result["model"]
 
     return summary
+
+
+def safely_record_health(
+    operation: Callable[[], None],
+) -> None:
+    """Keep telemetry failures from stopping source collection."""
+    try:
+        operation()
+    except Exception as error:
+        print(
+            "Source health recording failed: "
+            f"{error}"
+        )
+
+
+def collect_with_health(
+    competitor_id: str,
+    signal_type: str,
+    provider: str,
+    collector: Callable[[], dict[str, Any]],
+    source_id: str | None = None,
+) -> dict[str, Any]:
+    """Collect one snapshot and maintain source health state."""
+    safely_record_health(
+        lambda: record_source_attempt(
+            competitor_id=competitor_id,
+            signal_type=signal_type,
+            provider=provider,
+            source_id=source_id,
+        )
+    )
+
+    try:
+        snapshot = collector()
+    except Exception as error:
+        safely_record_health(
+            lambda: record_source_failure(
+                competitor_id=competitor_id,
+                signal_type=signal_type,
+                provider=provider,
+                source_id=source_id,
+                error=error,
+            )
+        )
+        raise
+
+    safely_record_health(
+        lambda: record_source_success(
+            competitor_id=competitor_id,
+            signal_type=signal_type,
+            provider=provider,
+            source_id=source_id,
+            snapshot_id=snapshot["id"],
+        )
+    )
+
+    return snapshot
 
 
 def list_competitors(
@@ -129,8 +193,13 @@ def monitor_general(
     competitor_id: str,
 ) -> dict[str, Any]:
     """Collect a homepage snapshot and process its diff."""
-    snapshot = asyncio.run(
-        scrape_competitor(competitor_id)
+    snapshot = collect_with_health(
+        competitor_id=competitor_id,
+        signal_type="general",
+        provider="website",
+        collector=lambda: asyncio.run(
+            scrape_competitor(competitor_id)
+        ),
     )
 
     pipeline_result = run_pipeline(
@@ -155,8 +224,13 @@ def monitor_pricing(
     competitor_id: str,
 ) -> dict[str, Any]:
     """Collect a pricing snapshot and process its diff."""
-    snapshot = asyncio.run(
-        scrape_pricing(competitor_id)
+    snapshot = collect_with_health(
+        competitor_id=competitor_id,
+        signal_type="pricing",
+        provider="pricing_page",
+        collector=lambda: asyncio.run(
+            scrape_pricing(competitor_id)
+        ),
     )
 
     pipeline_result = run_pipeline(
@@ -181,8 +255,18 @@ def monitor_reviews(
     source_id: str,
 ) -> dict[str, Any]:
     """Collect a review snapshot and process its diff."""
-    snapshot = collect_reviews(source_id)
-    competitor_id = snapshot["competitor_id"]
+    context = get_source_context(
+        table_name="review_sources",
+        source_id=source_id,
+    )
+    competitor_id = context["competitor_id"]
+    snapshot = collect_with_health(
+        competitor_id=competitor_id,
+        signal_type="reviews",
+        provider=context["provider"],
+        source_id=source_id,
+        collector=lambda: collect_reviews(source_id),
+    )
 
     pipeline_result = run_pipeline(
         competitor_id=competitor_id,
@@ -207,8 +291,18 @@ def monitor_jobs(
     source_id: str,
 ) -> dict[str, Any]:
     """Collect a job snapshot and process its diff."""
-    snapshot = collect_jobs(source_id)
-    competitor_id = snapshot["competitor_id"]
+    context = get_source_context(
+        table_name="job_sources",
+        source_id=source_id,
+    )
+    competitor_id = context["competitor_id"]
+    snapshot = collect_with_health(
+        competitor_id=competitor_id,
+        signal_type="jobs",
+        provider=context["provider"],
+        source_id=source_id,
+        collector=lambda: collect_jobs(source_id),
+    )
 
     pipeline_result = run_pipeline(
         competitor_id=competitor_id,
@@ -233,8 +327,18 @@ def monitor_news(
     source_id: str,
 ) -> dict[str, Any]:
     """Collect a news snapshot and process its diff."""
-    snapshot = collect_news(source_id)
-    competitor_id = snapshot["competitor_id"]
+    context = get_source_context(
+        table_name="news_sources",
+        source_id=source_id,
+    )
+    competitor_id = context["competitor_id"]
+    snapshot = collect_with_health(
+        competitor_id=competitor_id,
+        signal_type="news",
+        provider=context["provider"],
+        source_id=source_id,
+        collector=lambda: collect_news(source_id),
+    )
 
     pipeline_result = run_pipeline(
         competitor_id=competitor_id,

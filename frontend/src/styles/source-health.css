@@ -1,0 +1,49 @@
+.signal-state--healthy {
+  border-color: rgba(47, 117, 100, 0.32);
+  background: rgba(47, 117, 100, 0.12);
+  color: var(--green, #2f7564);
+}
+
+.signal-state--pending {
+  border-color: rgba(174, 128, 44, 0.35);
+  background: rgba(174, 128, 44, 0.1);
+  color: #805b18;
+}
+
+.signal-state--degraded,
+.signal-state--failed {
+  border-color: rgba(176, 63, 48, 0.35);
+  background: rgba(176, 63, 48, 0.09);
+  color: #9a3025;
+}
+
+.signal-state--blocked,
+.signal-state--unsupported,
+.signal-state--disabled,
+.signal-state--unconfigured {
+  border-color: rgba(18, 38, 70, 0.2);
+  background: rgba(18, 38, 70, 0.05);
+  color: rgba(18, 38, 70, 0.68);
+}
+
+.source-health-error {
+  display: -webkit-box;
+  max-width: 18rem;
+  margin-top: 0.55rem;
+  overflow: hidden;
+  color: #9a3025;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.source-health-failures {
+  display: block;
+  margin-top: 0.35rem;
+  color: rgba(18, 38, 70, 0.58);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
