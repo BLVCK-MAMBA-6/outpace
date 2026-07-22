@@ -2,6 +2,9 @@
 Outpace FastAPI application.
 """
 
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,21 +16,48 @@ from api.routers import (
 )
 
 
+load_dotenv()
+
+frontend_url = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173",
+).rstrip("/")
+
+allowed_origins = list(
+    dict.fromkeys(
+        [
+            frontend_url,
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    )
+)
+
+
 app = FastAPI(
     title="Outpace API",
     description=(
         "AI-powered competitive monitoring across websites, "
         "pricing, reviews, jobs, and news."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=[
+        "GET",
+        "POST",
+        "PATCH",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+    ],
 )
 
 app.include_router(
@@ -61,7 +91,7 @@ def root():
     return {
         "status": "ok",
         "service": "outpace-api",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
