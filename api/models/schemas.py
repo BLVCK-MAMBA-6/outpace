@@ -69,6 +69,27 @@ class CompetitorResponse(BaseModel):
     updated_at: datetime
 
 
+class MonitoringSignalStatus(BaseModel):
+    """Configuration and collection state for one signal."""
+
+    signal_type: SignalType
+    configured: bool
+    enabled: bool
+    source_id: UUID | None = None
+    provider: str | None = None
+    source_url: str | None = None
+    last_polled_at: datetime | None = None
+    latest_snapshot_id: UUID | None = None
+    latest_snapshot_at: datetime | None = None
+
+
+class CompetitorMonitoringResponse(BaseModel):
+    """Five-signal monitoring state for one competitor."""
+
+    competitor: CompetitorResponse
+    signals: list[MonitoringSignalStatus]
+
+
 class BriefResponse(BaseModel):
     """Stored competitive-intelligence brief."""
 

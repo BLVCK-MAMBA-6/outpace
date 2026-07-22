@@ -19,6 +19,9 @@ import {
   DashboardPage,
 } from '../pages/DashboardPage'
 import {
+  CompetitorDetailPage,
+} from '../pages/CompetitorDetailPage'
+import {
   LandingPage,
 } from '../pages/LandingPage'
 import {
@@ -67,6 +70,10 @@ export function App() {
             <Route
               path="/dashboard"
               element={<DashboardPage />}
+            />
+            <Route
+              path="/competitors/:competitorId"
+              element={<CompetitorDetailPage />}
             />
             <Route
               path="/onboarding"

@@ -392,22 +392,19 @@ export function DashboardPage() {
                         '0',
                       )}
                     </span>
-                    <div>
+                    <Link
+                      className="competitor-rail-link"
+                      to={`/competitors/${competitor.id}`}
+                    >
                       <strong>
                         {competitor.name}
                       </strong>
-                      <a
-                        href={
-                          competitor.website_url
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      <span>
                         {new URL(
                           competitor.website_url,
                         ).hostname}
-                      </a>
-                    </div>
+                      </span>
+                    </Link>
                     <i
                       title="Monitoring configured"
                       aria-label="Monitoring configured"

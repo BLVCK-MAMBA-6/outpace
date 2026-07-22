@@ -38,3 +38,43 @@ export type CompetitorCreate = {
   website_url: string
   pricing_url?: string | null
 }
+
+export type SignalType =
+  | 'general'
+  | 'pricing'
+  | 'reviews'
+  | 'jobs'
+  | 'news'
+
+export type MonitoringSignalStatus = {
+  signal_type: SignalType
+  configured: boolean
+  enabled: boolean
+  source_id: string | null
+  provider: string | null
+  source_url: string | null
+  last_polled_at: string | null
+  latest_snapshot_id: string | null
+  latest_snapshot_at: string | null
+}
+
+export type CompetitorMonitoring = {
+  competitor: Competitor
+  signals: MonitoringSignalStatus[]
+}
+
+export type TaskQueued = {
+  status: 'queued'
+  task_id: string
+  signal_type: SignalType
+  target_id: string
+}
+
+export type TaskStatus = {
+  task_id: string
+  state: string
+  ready: boolean
+  successful: boolean | null
+  result: Record<string, unknown> | null
+  error: string | null
+}
