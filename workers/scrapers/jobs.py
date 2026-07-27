@@ -6,9 +6,10 @@ Supported providers:
 - github: Public GitHub careers repository
 - html: Public server-rendered careers page
 - ashby: Public Ashby job board API
+- greenhouse: Public Greenhouse Job Board API
+- lever: Public Lever Postings API
+- deel: Public Deel-hosted job board JSON-LD
 - manual: Clearly labelled synthetic fixture data
-
-Greenhouse and Lever are reserved for future provider adapters.
 
 Run:
 
@@ -19,10 +20,12 @@ import argparse
 import hashlib
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlparse
 from uuid import UUID
 
 import httpx
@@ -653,6 +656,790 @@ def fetch_ashby_payload(
     }
 
 
+def clean_provider_html(value: Any) -> str:
+    """Convert bounded provider HTML or text into normalized text."""
+    text = BeautifulSoup(
+        str(value or ""),
+        "html.parser",
+    ).get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()[:8_000]
+
+
+def canonical_html_job_url(value: str) -> str:
+    """Preserve query-based job URLs; normalize path URLs with a slash."""
+    parsed = urlparse(value)
+    if parsed.query:
+        return value
+    return value.rstrip("/") + "/"
+
+
+def greenhouse_metadata_value(
+    job: dict[str, Any],
+    *names: str,
+) -> str:
+    """Read a named Greenhouse metadata value when it is public."""
+    expected = {name.casefold() for name in names}
+
+    for item in job.get("metadata") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip().casefold()
+        if name not in expected:
+            continue
+        value = item.get("value")
+        if isinstance(value, list):
+            return ", ".join(
+                str(entry).strip()
+                for entry in value
+                if str(entry).strip()
+            )
+        return str(value or "").strip()
+
+    return ""
+
+
+def parse_greenhouse_jobs(
+    payload: dict[str, Any],
+    board_token: str,
+) -> list[dict[str, Any]]:
+    """Normalize Greenhouse's public published-job response."""
+    raw_jobs = payload.get("jobs")
+    if not isinstance(raw_jobs, list):
+        raise ValueError(
+            "Greenhouse response does not contain a jobs list"
+        )
+
+    jobs = []
+    for raw_job in raw_jobs:
+        if not isinstance(raw_job, dict):
+            continue
+
+        job_id = str(raw_job.get("id") or "").strip()
+        title = str(raw_job.get("title") or "").strip()
+        if not job_id or not title:
+            continue
+
+        location_data = raw_job.get("location") or {}
+        location = (
+            str(location_data.get("name") or "").strip()
+            if isinstance(location_data, dict)
+            else str(location_data).strip()
+        )
+        departments = raw_job.get("departments") or []
+        department = ""
+        if departments and isinstance(departments[0], dict):
+            department = str(
+                departments[0].get("name") or ""
+            ).strip()
+
+        jobs.append(
+            {
+                "id": f"greenhouse:{job_id}",
+                "title": title,
+                "department": department,
+                "location": location,
+                "employment_type": greenhouse_metadata_value(
+                    raw_job,
+                    "employment type",
+                    "employment_type",
+                    "commitment",
+                ),
+                "workplace_type": infer_workplace_type(
+                    f"{title} {location}"
+                ),
+                "url": str(
+                    raw_job.get("absolute_url")
+                    or (
+                        "https://boards.greenhouse.io/"
+                        f"{board_token}/jobs/{job_id}"
+                    )
+                ).strip(),
+                "description": clean_provider_html(
+                    raw_job.get("content")
+                ),
+                "published_at": None,
+            }
+        )
+
+    return jobs
+
+
+def fetch_greenhouse_payload(
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch published jobs from Greenhouse's public board API."""
+    metadata = source.get("metadata") or {}
+    board_token = str(
+        source.get("external_source_id")
+        or metadata.get("board_token")
+        or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", board_token):
+        raise ValueError(
+            "Greenhouse source requires a valid board token"
+        )
+
+    endpoint = (
+        "https://boards-api.greenhouse.io/v1/boards/"
+        f"{quote(board_token, safe='')}/jobs?content=true"
+    )
+    response = httpx.get(
+        endpoint,
+        timeout=30,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Outpace-Competitive-Monitor/1.0",
+            "Accept": "application/json",
+        },
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ValueError(
+            "Greenhouse response was not valid JSON"
+        ) from error
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Greenhouse response must be a JSON object"
+        )
+
+    return {
+        "company_name": metadata.get("company_name"),
+        "provider_metadata": {
+            "board_token": board_token,
+            "endpoint": endpoint,
+        },
+        "jobs": parse_greenhouse_jobs(payload, board_token),
+        "test_fixture": False,
+    }
+
+
+def lever_timestamp(value: Any) -> str | None:
+    """Convert an optional Lever millisecond timestamp to ISO-8601."""
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(
+            value / 1_000,
+            tz=timezone.utc,
+        ).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def parse_lever_jobs(
+    payload: list[Any],
+    site_name: str,
+) -> list[dict[str, Any]]:
+    """Normalize Lever's public published-postings response."""
+    jobs = []
+    for raw_job in payload:
+        if not isinstance(raw_job, dict):
+            continue
+
+        job_id = str(raw_job.get("id") or "").strip()
+        title = str(raw_job.get("text") or "").strip()
+        if not job_id or not title:
+            continue
+
+        categories = raw_job.get("categories") or {}
+        if not isinstance(categories, dict):
+            categories = {}
+        location = str(
+            categories.get("location") or ""
+        ).strip()
+        workplace_value = str(
+            raw_job.get("workplaceType") or ""
+        ).strip().casefold()
+        workplace_map = {
+            "remote": "remote",
+            "hybrid": "hybrid",
+            "on-site": "onsite",
+            "onsite": "onsite",
+        }
+
+        jobs.append(
+            {
+                "id": f"lever:{job_id}",
+                "title": title,
+                "department": str(
+                    categories.get("department")
+                    or categories.get("team")
+                    or ""
+                ).strip(),
+                "location": location,
+                "employment_type": str(
+                    categories.get("commitment") or ""
+                ).strip(),
+                "workplace_type": workplace_map.get(
+                    workplace_value,
+                    infer_workplace_type(
+                        f"{title} {location}"
+                    ),
+                ),
+                "url": str(
+                    raw_job.get("hostedUrl")
+                    or f"https://jobs.lever.co/{site_name}/{job_id}"
+                ).strip(),
+                "description": clean_provider_html(
+                    raw_job.get("descriptionPlain")
+                    or raw_job.get("description")
+                ),
+                "published_at": lever_timestamp(
+                    raw_job.get("createdAt")
+                ),
+            }
+        )
+
+    return jobs
+
+
+def fetch_lever_payload(
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch published jobs from Lever's public postings API."""
+    metadata = source.get("metadata") or {}
+    site_name = str(
+        source.get("external_source_id")
+        or metadata.get("site_name")
+        or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", site_name):
+        raise ValueError(
+            "Lever source requires a valid site name"
+        )
+
+    region = str(metadata.get("region") or "global").casefold()
+    api_host = (
+        "api.eu.lever.co"
+        if region == "eu"
+        else "api.lever.co"
+    )
+    endpoint = (
+        f"https://{api_host}/v0/postings/"
+        f"{quote(site_name, safe='')}?mode=json"
+    )
+    response = httpx.get(
+        endpoint,
+        timeout=30,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Outpace-Competitive-Monitor/1.0",
+            "Accept": "application/json",
+        },
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ValueError(
+            "Lever response was not valid JSON"
+        ) from error
+    if not isinstance(payload, list):
+        raise ValueError(
+            "Lever response must be a JSON list"
+        )
+
+    return {
+        "company_name": metadata.get("company_name"),
+        "provider_metadata": {
+            "site_name": site_name,
+            "region": region,
+            "endpoint": endpoint,
+        },
+        "jobs": parse_lever_jobs(payload, site_name),
+        "test_fixture": False,
+    }
+
+
+DEEL_JOB_ID_PATTERN = re.compile(
+    r"/job-details/"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
+
+DEEL_RETRYABLE_STATUS_CODES = {
+    403,
+    408,
+    425,
+    429,
+    500,
+    502,
+    503,
+    504,
+}
+
+
+def iter_json_ld_nodes(value: Any):
+    """Yield nested JSON-LD objects without assuming one page shape."""
+    if isinstance(value, dict):
+        yield value
+        graph = value.get("@graph")
+        if isinstance(graph, (dict, list)):
+            yield from iter_json_ld_nodes(graph)
+    elif isinstance(value, list):
+        for item in value:
+            yield from iter_json_ld_nodes(item)
+
+
+def find_json_ld(
+    html: str,
+    type_name: str,
+) -> dict[str, Any] | None:
+    """Return the first JSON-LD object with the requested schema type."""
+    soup = BeautifulSoup(html, "html.parser")
+    expected = type_name.casefold()
+
+    for script in soup.find_all(
+        "script",
+        attrs={"type": "application/ld+json"},
+    ):
+        raw = script.string or script.get_text()
+        if not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+        for node in iter_json_ld_nodes(data):
+            node_type = node.get("@type")
+            values = (
+                node_type
+                if isinstance(node_type, list)
+                else [node_type]
+            )
+            if any(
+                str(value).casefold() == expected
+                for value in values
+            ):
+                return node
+
+    return None
+
+
+def deel_listing_jobs(
+    item_list: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Read stable job UUIDs and detail URLs from a Deel ItemList."""
+    elements = item_list.get("itemListElement")
+    if not isinstance(elements, list):
+        raise ValueError(
+            "Deel board ItemList does not contain itemListElement"
+        )
+
+    jobs = []
+    seen_ids = set()
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        item = element.get("item")
+        if not isinstance(item, dict):
+            item = element
+
+        detail_url = str(
+            item.get("url")
+            or element.get("url")
+            or item.get("@id")
+            or ""
+        ).strip()
+        match = DEEL_JOB_ID_PATTERN.search(detail_url)
+        if not match:
+            continue
+
+        job_id = match.group(1).casefold()
+        if job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+        jobs.append(
+            {
+                "id": job_id,
+                "url": detail_url,
+                "title": str(
+                    item.get("name")
+                    or item.get("title")
+                    or element.get("name")
+                    or ""
+                ).strip(),
+            }
+        )
+
+    return jobs
+
+
+def deel_listing_jobs_from_html(
+    html: str,
+    tenant: str,
+) -> list[dict[str, str]]:
+    """Read stable job UUIDs from Deel's embedded careers-page data."""
+    jobs = []
+    seen_ids = set()
+
+    for match in DEEL_JOB_ID_PATTERN.finditer(html):
+        job_id = match.group(1).casefold()
+        if job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+        jobs.append(
+            {
+                "id": job_id,
+                "url": (
+                    f"https://jobs.deel.com/{tenant}/job-details/"
+                    f"{job_id}/overview"
+                ),
+                "title": "",
+            }
+        )
+
+    return jobs
+
+
+def deel_embedded_org_department(html: str) -> str:
+    """Read Deel's Org Department value from embedded page data."""
+    normalized = html.replace('\\"', '"')
+    marker_pattern = re.compile(
+        r'"name"\s*:\s*"Org Department"',
+        re.IGNORECASE,
+    )
+
+    for marker in marker_pattern.finditer(normalized):
+        prefix = normalized[
+            max(0, marker.start() - 800):marker.start()
+        ]
+        names = re.findall(
+            r'"name"\s*:\s*"([^"]+)"',
+            prefix,
+        )
+        if names:
+            department = re.sub(
+                r"\\+u([0-9a-fA-F]{4})",
+                lambda match: chr(
+                    int(match.group(1), 16)
+                ),
+                names[-1],
+            ).strip()
+            if department.casefold() != "org department":
+                return department
+
+    return ""
+
+
+def json_ld_location(value: Any) -> str:
+    """Flatten Schema.org job locations into a stable display value."""
+    values = value if isinstance(value, list) else [value]
+    locations = []
+
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        address = item.get("address")
+        if not isinstance(address, dict):
+            address = item
+        parts = [
+            str(address.get(field) or "").strip()
+            for field in (
+                "addressLocality",
+                "addressRegion",
+                "addressCountry",
+            )
+        ]
+        location = ", ".join(
+            part for part in parts if part
+        )
+        if not location:
+            location = str(
+                item.get("name") or address.get("name") or ""
+            ).strip()
+        if location and location not in locations:
+            locations.append(location)
+
+    return " · ".join(locations)
+
+
+def parse_deel_job_posting(
+    posting: dict[str, Any],
+    job_id: str,
+    detail_url: str,
+    fallback_title: str = "",
+) -> dict[str, Any]:
+    """Normalize one Deel JobPosting JSON-LD object."""
+    title = str(
+        posting.get("title")
+        or posting.get("name")
+        or fallback_title
+        or ""
+    ).strip()
+    if not title:
+        raise ValueError(
+            f"Deel job {job_id} is missing a title"
+        )
+
+    location = json_ld_location(
+        posting.get("jobLocation")
+    )
+    applicant_location = json_ld_location(
+        posting.get("applicantLocationRequirements")
+    )
+    if not location:
+        location = applicant_location
+
+    employment_type = posting.get("employmentType")
+    if isinstance(employment_type, list):
+        employment_type = ", ".join(
+            str(value).strip()
+            for value in employment_type
+            if str(value).strip()
+        )
+
+    job_location_type = str(
+        posting.get("jobLocationType") or ""
+    ).strip().casefold()
+    explicit_workplace_types = {
+        "telecommute": "remote",
+        "remote": "remote",
+        "hybrid": "hybrid",
+        "onsite": "onsite",
+        "on-site": "onsite",
+    }
+    workplace_type = explicit_workplace_types.get(
+        job_location_type,
+        "",
+    )
+    if not workplace_type:
+        inferred_workplace_type = infer_workplace_type(
+            f"{title} {location} {applicant_location}"
+        )
+        # A geographic eligibility list does not prove that a Deel role
+        # requires office attendance. Preserve unknown rather than
+        # manufacturing an onsite classification.
+        workplace_type = (
+            inferred_workplace_type
+            if inferred_workplace_type in {"remote", "hybrid"}
+            else ""
+        )
+
+    occupational_category = posting.get(
+        "occupationalCategory"
+    )
+    if isinstance(occupational_category, dict):
+        occupational_category = (
+            occupational_category.get("name")
+            or occupational_category.get("codeValue")
+            or ""
+        )
+
+    return {
+        "id": f"deel:{job_id}",
+        "title": title,
+        "department": str(
+            occupational_category
+            or posting.get("department")
+            or ""
+        ).strip(),
+        "location": location,
+        "employment_type": str(
+            employment_type or ""
+        ).strip(),
+        "workplace_type": workplace_type,
+        "url": str(
+            posting.get("url") or detail_url
+        ).strip(),
+        "description": clean_provider_html(
+            posting.get("description")
+        ),
+        "published_at": (
+            str(posting.get("datePosted")).strip()
+            if posting.get("datePosted")
+            else None
+        ),
+    }
+
+
+def fetch_deel_job(
+    listing: dict[str, str],
+) -> dict[str, Any]:
+    """Fetch one public Deel detail page and parse JobPosting JSON-LD."""
+    response = None
+    last_transport_error = None
+
+    for attempt in range(3):
+        try:
+            response = httpx.get(
+                listing["url"],
+                timeout=30,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Outpace-Competitive-Monitor/1.0"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+        except httpx.TransportError as error:
+            last_transport_error = error
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+            continue
+
+        if (
+            response.status_code
+            not in DEEL_RETRYABLE_STATUS_CODES
+        ):
+            break
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+
+    if response is None:
+        raise ValueError(
+            f"Deel job {listing['id']} request failed after "
+            f"three attempts: {last_transport_error}"
+        )
+
+    if response.status_code == 404:
+        raise ValueError(
+            f"Deel job {listing['id']} returned 404 while still "
+            "present on the public board"
+        )
+
+    response.raise_for_status()
+    posting = find_json_ld(
+        response.text,
+        "JobPosting",
+    )
+    if not posting:
+        raise ValueError(
+            f"Deel job {listing['id']} did not expose JobPosting JSON-LD"
+        )
+    if not (
+        posting.get("occupationalCategory")
+        or posting.get("department")
+    ):
+        posting = dict(posting)
+        posting["department"] = deel_embedded_org_department(
+            response.text
+        )
+    return parse_deel_job_posting(
+        posting=posting,
+        job_id=listing["id"],
+        detail_url=listing["url"],
+        fallback_title=listing["title"],
+    )
+
+
+def fetch_deel_payload(
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch a Deel-hosted board and its public JSON-LD job pages."""
+    metadata = source.get("metadata") or {}
+    tenant = str(
+        source.get("external_source_id")
+        or metadata.get("tenant")
+        or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", tenant):
+        raise ValueError(
+            "Deel source requires a valid tenant identifier"
+        )
+
+    endpoint = f"https://jobs.deel.com/{quote(tenant, safe='')}"
+    response = httpx.get(
+        endpoint,
+        timeout=30,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Outpace-Competitive-Monitor/1.0",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    response.raise_for_status()
+    if re.search(
+        r"<title>\s*Job Board Not Found\s*</title>",
+        response.text,
+        flags=re.IGNORECASE,
+    ):
+        raise ValueError(
+            f"Deel board '{tenant}' does not exist"
+        )
+
+    item_list = find_json_ld(
+        response.text,
+        "ItemList",
+    )
+    if item_list:
+        listings = deel_listing_jobs(item_list)
+        listing_source = "item_list_json_ld"
+    else:
+        listings = deel_listing_jobs_from_html(
+            response.text,
+            tenant,
+        )
+        listing_source = "embedded_job_urls"
+
+    if not listings:
+        raise ValueError(
+            "Deel board did not expose stable public job identifiers"
+        )
+
+    jobs = []
+    failures = []
+
+    # Deel rate-limits aggressive detail crawling. Three workers and a
+    # short pause between batches keep the collector intentionally polite.
+    for offset in range(0, len(listings), 3):
+        batch = listings[offset:offset + 3]
+        with ThreadPoolExecutor(
+            max_workers=len(batch)
+        ) as executor:
+            futures = {
+                executor.submit(fetch_deel_job, listing): listing
+                for listing in batch
+            }
+            for future in as_completed(futures):
+                listing = futures[future]
+                try:
+                    job = future.result()
+                except (httpx.HTTPError, ValueError) as error:
+                    failures.append(
+                        f"{listing['id']}: {error}"
+                    )
+                    continue
+                jobs.append(job)
+        if offset + len(batch) < len(listings):
+            time.sleep(0.4)
+
+    if failures:
+        failure_preview = "; ".join(failures[:3])
+        raise ValueError(
+            "Deel detail crawl was incomplete; snapshot rejected "
+            f"to prevent false removals ({len(failures)} failures): "
+            f"{failure_preview}"
+        )
+
+    if listings and not jobs:
+        raise ValueError(
+            "Deel board listed jobs but none of its detail pages "
+            "could be parsed"
+        )
+
+    jobs.sort(key=lambda job: job["id"])
+    return {
+        "company_name": metadata.get("company_name"),
+        "provider_metadata": {
+            "tenant": tenant,
+            "endpoint": endpoint,
+            "resolved_endpoint": str(response.url),
+            "listing_source": listing_source,
+            "listed_job_count": len(listings),
+            "detail_failure_count": len(failures),
+            "detail_failures": failures[:10],
+        },
+        "jobs": jobs,
+        "test_fixture": False,
+    }
+
+
 
 def render_careers_page(
     source_url: str,
@@ -922,7 +1709,7 @@ def parse_html_jobs(
                         location
                     )
                 ),
-                "url": normalized_url + "/",
+                "url": canonical_html_job_url(normalized_url),
                 "description": description,
                 "published_at": None,
             }
@@ -1096,18 +1883,18 @@ def fetch_source_payload(
     if source["source"] == "ashby":
         return fetch_ashby_payload(source)
 
+    if source["source"] == "greenhouse":
+        return fetch_greenhouse_payload(source)
+
+    if source["source"] == "lever":
+        return fetch_lever_payload(source)
+
+    if source["source"] == "deel":
+        return fetch_deel_payload(source)
+
     if source["source"] == "manual":
         return load_manual_fixture(
             source.get("metadata") or {}
-        )
-
-    if source["source"] in {
-        "greenhouse",
-        "lever",
-    }:
-        raise RuntimeError(
-            f"The {source['source']} provider is reserved "
-            "but has not been implemented yet"
         )
 
     raise ValueError(

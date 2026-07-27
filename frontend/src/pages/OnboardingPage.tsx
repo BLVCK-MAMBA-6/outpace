@@ -15,6 +15,7 @@ import type {
   Competitor,
   CompetitorCreate,
   JobSourceCreate,
+  JobSourceDiscovery,
   MonitoringSource,
   NewsSourceCreate,
   SignalType,
@@ -28,6 +29,18 @@ type BaselineTarget = {
   signalType: SignalType
   competitorId?: string
   sourceId?: string
+}
+
+const jobProviderLabels: Record<
+  JobSourceCreate['provider'],
+  string
+> = {
+  html: 'Official careers page',
+  github: 'GitHub',
+  ashby: 'Ashby',
+  greenhouse: 'Greenhouse',
+  lever: 'Lever',
+  deel: 'Deel-hosted careers',
 }
 
 export function OnboardingPage() {
@@ -47,9 +60,13 @@ export function OnboardingPage() {
   const [jobsEnabled, setJobsEnabled] =
     useState(false)
   const [jobProvider, setJobProvider] =
-    useState<'html' | 'github'>('html')
+    useState<JobSourceCreate['provider']>('html')
   const [jobSourceUrl, setJobSourceUrl] =
     useState('')
+  const [jobDiscovery, setJobDiscovery] =
+    useState<JobSourceDiscovery | null>(null)
+  const [discoveringJobs, setDiscoveringJobs] =
+    useState(false)
   const [jobLinkPath, setJobLinkPath] =
     useState('/careers/')
   const [githubBranch, setGithubBranch] =
@@ -149,17 +166,36 @@ export function OnboardingPage() {
     const requests: Promise<void>[] = []
 
     if (jobsEnabled) {
+      if (!jobDiscovery) {
+        setSubmitting(false)
+        setError(
+          'Detect and confirm the careers source before continuing.',
+        )
+        return
+      }
+
       const payload: JobSourceCreate = {
         provider: jobProvider,
         source_url: jobSourceUrl.trim(),
+        ...(jobDiscovery.external_source_id
+          ? {
+              external_source_id:
+                jobDiscovery.external_source_id,
+            }
+          : {}),
+        ...(jobDiscovery.region
+          ? { region: jobDiscovery.region }
+          : {}),
         ...(jobProvider === 'html'
           ? {
               job_link_path: jobLinkPath.trim(),
             }
-          : {
-              branch: githubBranch.trim(),
-              readme_path: githubReadmePath.trim(),
-            }),
+          : jobProvider === 'github'
+            ? {
+                branch: githubBranch.trim(),
+                readme_path: githubReadmePath.trim(),
+              }
+            : {}),
       }
 
       requests.push(
@@ -224,6 +260,50 @@ export function OnboardingPage() {
       )
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function handleJobDiscovery() {
+    if (!competitor) {
+      setError('Create the competitor before detecting sources.')
+      return
+    }
+
+    if (!jobSourceUrl.trim()) {
+      setError('Enter the public careers page or job-board URL.')
+      return
+    }
+
+    setDiscoveringJobs(true)
+    setJobDiscovery(null)
+    setError(null)
+
+    try {
+      const discovered = await apiRequest<JobSourceDiscovery>(
+        `/competitors/${competitor.id}/sources/jobs/discover`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            careers_url: jobSourceUrl.trim(),
+          }),
+        },
+      )
+
+      setJobDiscovery(discovered)
+      setJobProvider(discovered.provider)
+
+      const detectedPath = discovered.metadata.job_link_path
+      if (typeof detectedPath === 'string') {
+        setJobLinkPath(detectedPath)
+      }
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Could not verify a supported careers source',
+      )
+    } finally {
+      setDiscoveringJobs(false)
     }
   }
 
@@ -520,7 +600,11 @@ export function OnboardingPage() {
                         type="checkbox"
                         checked={jobsEnabled}
                         onChange={(event) => {
-                          setJobsEnabled(event.target.checked)
+                          const enabled = event.target.checked
+                          setJobsEnabled(enabled)
+                          if (!enabled) {
+                            setJobDiscovery(null)
+                          }
                         }}
                       />
                       <span>
@@ -531,56 +615,69 @@ export function OnboardingPage() {
 
                   {jobsEnabled && (
                     <div className="source-setup-fields">
-                      <fieldset className="provider-choice">
-                        <legend>SOURCE FORMAT</legend>
-                        <label>
-                          <input
-                            type="radio"
-                            name="job-provider"
-                            value="html"
-                            checked={jobProvider === 'html'}
-                            onChange={() => {
-                              setJobProvider('html')
-                            }}
-                          />
-                          Official careers page
-                        </label>
-                        <label>
-                          <input
-                            type="radio"
-                            name="job-provider"
-                            value="github"
-                            checked={jobProvider === 'github'}
-                            onChange={() => {
-                              setJobProvider('github')
-                            }}
-                          />
-                          Public GitHub repository
-                        </label>
-                      </fieldset>
-
                       <label>
-                        <span>
-                          {jobProvider === 'html'
-                            ? 'CAREERS LISTING URL'
-                            : 'GITHUB REPOSITORY URL'}
-                        </span>
+                        <span>CAREERS PAGE OR JOB BOARD URL</span>
                         <input
                           required
                           type="url"
                           value={jobSourceUrl}
-                          placeholder={
-                            jobProvider === 'html'
-                              ? 'https://example.com/careers/'
-                              : 'https://github.com/company/hiring'
-                          }
+                          placeholder="https://example.com/careers/"
                           onChange={(event) => {
                             setJobSourceUrl(event.target.value)
+                            setJobDiscovery(null)
                           }}
                         />
+                        <small>
+                          Outpace detects the supported source and asks
+                          you to confirm it before saving.
+                        </small>
                       </label>
 
-                      {jobProvider === 'html' ? (
+                      <button
+                        className="button button--quiet source-detect-button"
+                        type="button"
+                        disabled={discoveringJobs}
+                        onClick={() => {
+                          void handleJobDiscovery()
+                        }}
+                      >
+                        {discoveringJobs
+                          ? 'DETECTING SOURCE…'
+                          : jobDiscovery
+                            ? 'DETECT AGAIN'
+                            : 'DETECT SOURCE'}
+                      </button>
+
+                      {jobDiscovery && (
+                        <div
+                          className="source-discovery-result"
+                          role="status"
+                        >
+                          <div>
+                            <span>VERIFIED SUGGESTION</span>
+                            <strong>{jobDiscovery.message}</strong>
+                          </div>
+                          <dl>
+                            <div>
+                              <dt>CONFIDENCE</dt>
+                              <dd>{jobDiscovery.confidence}</dd>
+                            </div>
+                            <div>
+                              <dt>PUBLISHED ROLES</dt>
+                              <dd>
+                                {jobDiscovery.job_count
+                                  ?? 'Verified on first run'}
+                              </dd>
+                            </div>
+                          </dl>
+                          <p>
+                            Nothing is connected until you continue.
+                            Change the URL to reject this suggestion.
+                          </p>
+                        </div>
+                      )}
+
+                      {jobDiscovery && jobProvider === 'html' ? (
                         <label>
                           <span>JOB URL PATTERN</span>
                           <input
@@ -595,7 +692,7 @@ export function OnboardingPage() {
                             The shared path inside each individual job URL.
                           </small>
                         </label>
-                      ) : (
+                      ) : jobDiscovery && jobProvider === 'github' ? (
                         <div className="source-field-pair">
                           <label>
                             <span>BRANCH</span>
@@ -618,7 +715,7 @@ export function OnboardingPage() {
                             />
                           </label>
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   )}
                 </article>
@@ -796,7 +893,12 @@ export function OnboardingPage() {
                           {target.signalType === 'pricing' &&
                             'Plans, packaging, prices, and features'}
                           {target.signalType === 'jobs' &&
-                            `${jobSource?.provider === 'github' ? 'GitHub' : 'Official careers page'} source`}
+                            `${
+                              jobProviderLabels[
+                                jobSource?.provider as
+                                  JobSourceCreate['provider']
+                              ] ?? 'Official careers page'
+                            } source`}
                           {target.signalType === 'news' &&
                             'Official blog or newsroom source'}
                         </p>

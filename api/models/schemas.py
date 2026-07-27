@@ -111,8 +111,22 @@ class CompetitorMonitoringResponse(BaseModel):
 class JobSourceCreate(BaseModel):
     """Configure one supported public careers source."""
 
-    provider: Literal["html", "github", "ashby"]
+    provider: Literal[
+        "html",
+        "github",
+        "ashby",
+        "greenhouse",
+        "lever",
+        "deel",
+    ]
     source_url: HttpUrl
+    external_source_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_/-]+$",
+    )
+    region: Literal["global", "eu"] | None = None
     board_name: str | None = Field(
         default=None,
         min_length=1,
@@ -133,6 +147,41 @@ class JobSourceCreate(BaseModel):
         default="README.md",
         min_length=1,
         max_length=500,
+    )
+
+
+class JobSourceDiscoveryRequest(BaseModel):
+    """Find a supported public careers provider for confirmation."""
+
+    careers_url: HttpUrl
+
+
+class JobSourceDiscoveryResponse(BaseModel):
+    """One verified source suggestion; never saved automatically."""
+
+    provider: Literal[
+        "html",
+        "github",
+        "ashby",
+        "greenhouse",
+        "lever",
+        "deel",
+    ]
+    source_url: str
+    external_source_id: str | None = None
+    region: Literal["global", "eu"] | None = None
+    confidence: Literal["high", "medium", "low"]
+    detected_by: Literal[
+        "direct_url",
+        "embedded_reference",
+        "verified_company_slug",
+        "public_html_fallback",
+    ]
+    job_count: int | None = None
+    requires_confirmation: bool
+    message: str
+    metadata: dict[str, Any] = Field(
+        default_factory=dict
     )
 
 

@@ -51,6 +51,9 @@ Last updated: _22/07/2026_
 - [x] Public GitHub careers provider built
 - [x] Public HTML careers provider built
 - [x] Public Ashby job-board provider built
+- [x] Public Greenhouse job-board provider built
+- [x] Public Lever postings provider built (global and EU)
+- [x] Careers provider discovery added to authenticated onboarding
 - [x] Structured job snapshots stored in `snapshots` table
 - [x] Zero-opening live baseline tested on Rows
 - [x] Active live-job ingestion tested on Hex (26 real openings)
@@ -287,7 +290,7 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - A synthetic new role tested addition detection, Gemini synthesis, brief storage, and duplicate prevention.
 - Two fresh Rows snapshots restored its latest comparison state to live data.
 
-**Follow-up:** Add Greenhouse and Lever adapters when a monitored competitor uses those systems. A natural live addition or removal has not yet been observed.
+**Follow-up:** Live-verify Greenhouse and Lever against the first monitored competitors that use those systems.
 
 ---
 
@@ -328,6 +331,89 @@ This log records architectural decisions, temporary shortcuts, blockers, and the
 - Added `docs/SOURCE_RELIABILITY.md` and `docs/PROVIDER_MATRIX.md`.
 
 **Safety rule:** A collection failure never inserts an empty snapshot. Cloudflare, CAPTCHA, authentication, and entitlement controls are not bypassed.
+
+---
+
+### 22/07/2026 — Careers provider discovery added to onboarding
+
+**Decision:** Ask for one official careers URL, detect a supported public provider, and require explicit user confirmation before storing the source.
+
+**Reason:** Non-technical users should not need to identify an applicant-tracking system or manually enter a provider token. Provider detection remains a suggestion because company slugs can be ambiguous and external pages can change.
+
+**Implementation:**
+
+- Recognizes direct Ashby, Greenhouse, Lever, and GitHub job-board URLs.
+- Reads public careers-page markup for embedded provider references.
+- Probes conservative company/domain slugs only against official public job APIs.
+- Supports both global and EU Lever endpoints.
+- Falls back to the existing HTML adapter only when a public page loads and no structured provider is verified.
+- Requires at least one published role for indirect provider matches; zero-role boards are accepted only when the user supplies the hosted board directly.
+- Rejects local and private-network discovery targets before fetching them.
+- Never connects or stores a discovered source until the authenticated user confirms it in onboarding.
+
+**Controlled verification:**
+
+- Twelve regression tests cover direct URL recognition, embedded references, slug discovery, zero-role false-positive rejection, HTML fallback path inference, query-based job URLs, zero-job Greenhouse boards, and Greenhouse/Lever normalization.
+- Greenhouse and Lever parser support is complete; live provider verification remains pending.
+
+---
+
+### 27/07/2026 — Deel-hosted careers provider added
+
+**Decision:** Treat Deel-hosted job boards as a structured provider instead
+of weakening the generic HTML parser.
+
+**Reason:** Deel's company careers page exposes visible roles through a
+client-rendered integration. The durable public source starts at
+`jobs.deel.com/{tenant}` and exposes provider-stable job-detail UUIDs.
+Individual detail pages contain `JobPosting` JSON-LD. Anchor-only HTML
+parsing therefore returned zero jobs even though the page visibly had open
+roles.
+
+**Implementation:**
+
+- Added `deel` to source discovery, API schemas, source storage, frontend
+  types, and the job collector.
+- Uses the tenant board's job-detail UUIDs as provider-stable identifiers.
+- Reads structured title, location, employment type, description, and
+  publication date from job-detail JSON-LD.
+- Limits detail-page concurrency to three and pauses between batches.
+- Retries provider throttling, transient transport, timeout, and server
+  responses with backoff.
+- Rejects incomplete detail crawls so transient failures cannot become
+  false removal signals.
+- Treats a detail-page 404 as an incomplete crawl while the job remains on
+  the board, and reports the failing job IDs for diagnosis.
+- Decodes literal JSON Unicode escapes in embedded department names before
+  storing normalized jobs.
+- Added migration `009_add_deel_job_source.sql`.
+- Handles Deel's redirect to `www.deel.com/careers`, whose index page embeds
+  stable `/job-details/{uuid}/overview` paths without `ItemList` JSON-LD.
+- Retains the original `ItemList` parser as a compatible first choice and
+  falls back only to validated job UUIDs found in the public index markup.
+
+**Regression coverage:** Direct Deel URLs, legacy `ItemList` extraction,
+redirected index UUID extraction, duplicate UUID suppression, missing-ID
+rejection, embedded Org Department extraction, explicit remote metadata,
+and `JobPosting` normalization are covered by unit tests.
+
+**Live verification:**
+
+- A complete collection stored 235 real jobs and was marked
+  `test_fixture: false`.
+- A later collection with one failed detail request was rejected before
+  snapshot storage, preventing a false removal signal.
+- After transient-detail retries were added, the next complete collection
+  stored the same total of 235 jobs.
+- The resulting comparison detected one provider-stable role addition and
+  one different role removal, with no field-only updates.
+- Gemini synthesized the real change at normal priority with `0.7`
+  confidence, and brief `627df734-5ac8-4964-bd37-21133abc3c8d` was stored.
+- Missing workplace metadata remains unspecified rather than being
+  incorrectly treated as onsite.
+
+**Follow-up:** The separate Deel pricing-page extraction failure remains the
+next provider-specific reliability task.
 
 ---
 

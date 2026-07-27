@@ -90,12 +90,37 @@ export type MonitoringSource = {
 }
 
 export type JobSourceCreate = {
-  provider: 'html' | 'github' | 'ashby'
+  provider:
+    | 'html'
+    | 'github'
+    | 'ashby'
+    | 'greenhouse'
+    | 'lever'
+    | 'deel'
   source_url: string
+  external_source_id?: string
+  region?: 'global' | 'eu'
   board_name?: string
   job_link_path?: string
   branch?: string
   readme_path?: string
+}
+
+export type JobSourceDiscovery = {
+  provider: JobSourceCreate['provider']
+  source_url: string
+  external_source_id: string | null
+  region: 'global' | 'eu' | null
+  confidence: 'high' | 'medium' | 'low'
+  detected_by:
+    | 'direct_url'
+    | 'embedded_reference'
+    | 'verified_company_slug'
+    | 'public_html_fallback'
+  job_count: number | null
+  requires_confirmation: boolean
+  message: string
+  metadata: Record<string, unknown>
 }
 
 export type NewsSourceCreate = {

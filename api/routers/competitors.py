@@ -2,8 +2,9 @@
 Authenticated competitor management endpoints.
 """
 
+import re
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,10 +17,13 @@ from api.models.schemas import (
     CompetitorResponse,
     CompetitorUpdate,
     JobSourceCreate,
+    JobSourceDiscoveryRequest,
+    JobSourceDiscoveryResponse,
     MonitoringSourceResponse,
     NewsSourceCreate,
 )
 from api.utils.supabase_client import get_supabase_client
+from workers.source_discovery import discover_job_source
 
 
 router = APIRouter()
@@ -39,6 +43,20 @@ SOURCE_TABLES = {
     "jobs": "job_sources",
     "news": "news_sources",
 }
+
+
+def _validated_provider_identifier(
+    value: str,
+    label: str,
+) -> str:
+    """Reject malformed provider IDs before they reach storage."""
+    normalized = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", normalized):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} contains unsupported characters",
+        )
+    return normalized
 
 
 def _get_owned_competitor(
@@ -382,6 +400,43 @@ def _source_response(
 
 
 @router.post(
+    "/{competitor_id}/sources/jobs/discover",
+    response_model=JobSourceDiscoveryResponse,
+)
+def discover_jobs_source(
+    competitor_id: UUID,
+    request: JobSourceDiscoveryRequest,
+    current_user: AuthenticatedUser = Depends(
+        get_current_user
+    ),
+):
+    """Suggest a verified public careers provider for confirmation."""
+    competitor = _get_owned_competitor(
+        competitor_id=str(competitor_id),
+        user_id=str(current_user.id),
+    )
+
+    try:
+        return discover_job_source(
+            careers_url=str(request.careers_url),
+            company_name=competitor["name"],
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Careers source discovery failed safely: "
+                f"{error}"
+            ),
+        ) from error
+
+
+@router.post(
     "/{competitor_id}/sources/jobs",
     response_model=MonitoringSourceResponse,
     status_code=201,
@@ -403,7 +458,7 @@ def configure_job_source(
     metadata = {
         "company_name": competitor["name"],
     }
-    external_source_id = None
+    external_source_id = source.external_source_id
 
     if source.provider == "github":
         parsed = urlparse(source_url)
@@ -448,12 +503,15 @@ def configure_job_source(
             source.board_name.strip()
             if source.board_name
             else (
-                path_parts[0]
-                if host in {
-                    "jobs.ashbyhq.com",
-                    "www.jobs.ashbyhq.com",
-                } and path_parts
-                else ""
+                source.external_source_id
+                or (
+                    path_parts[0]
+                    if host in {
+                        "jobs.ashbyhq.com",
+                        "www.jobs.ashbyhq.com",
+                    } and path_parts
+                    else ""
+                )
             )
         )
 
@@ -466,8 +524,141 @@ def configure_job_source(
                 ),
             )
 
+        board_name = _validated_provider_identifier(
+            board_name,
+            "Ashby board name",
+        )
         external_source_id = board_name
         metadata["board_name"] = board_name
+
+    elif source.provider == "greenhouse":
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        path_parts = [
+            part
+            for part in parsed.path.strip("/").split("/")
+            if part
+        ]
+        board_token = source.external_source_id or ""
+
+        if not board_token and host in {
+            "boards.greenhouse.io",
+            "job-boards.greenhouse.io",
+        } and path_parts:
+            board_token = (
+                (parse_qs(parsed.query).get("for") or [""])[0]
+                if path_parts[0] == "embed"
+                else path_parts[0]
+            )
+        elif (
+            not board_token
+            and host == "boards-api.greenhouse.io"
+            and len(path_parts) >= 3
+            and path_parts[:2] == ["v1", "boards"]
+        ):
+            board_token = path_parts[2]
+
+        if not board_token:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Greenhouse sources require a hosted board URL "
+                    "or verified external_source_id"
+                ),
+            )
+
+        board_token = _validated_provider_identifier(
+            board_token,
+            "Greenhouse board token",
+        )
+        external_source_id = board_token
+        metadata["board_token"] = board_token
+
+    elif source.provider == "lever":
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        path_parts = [
+            part
+            for part in parsed.path.strip("/").split("/")
+            if part
+        ]
+        site_name = source.external_source_id or ""
+
+        if not site_name and host in {
+            "jobs.lever.co",
+            "jobs.eu.lever.co",
+        } and path_parts:
+            site_name = path_parts[0]
+        elif (
+            not site_name
+            and host in {
+                "api.lever.co",
+                "api.eu.lever.co",
+            }
+            and len(path_parts) >= 3
+            and path_parts[:2] == ["v0", "postings"]
+        ):
+            site_name = path_parts[2]
+
+        if not site_name:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Lever sources require a hosted jobs URL "
+                    "or verified external_source_id"
+                ),
+            )
+
+        site_name = _validated_provider_identifier(
+            site_name,
+            "Lever site name",
+        )
+        region = source.region or (
+            "eu" if ".eu.lever.co" in host else "global"
+        )
+        external_source_id = site_name
+        metadata.update(
+            {
+                "site_name": site_name,
+                "region": region,
+            }
+        )
+
+    elif source.provider == "deel":
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        path_parts = [
+            part
+            for part in parsed.path.strip("/").split("/")
+            if part
+        ]
+        tenant = source.external_source_id or ""
+
+        if (
+            not tenant
+            and host in {
+                "jobs.deel.com",
+                "www.jobs.deel.com",
+            }
+            and path_parts
+        ):
+            tenant = path_parts[0]
+
+        if not tenant:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Deel sources require a jobs.deel.com tenant "
+                    "URL or verified external_source_id"
+                ),
+            )
+
+        tenant = _validated_provider_identifier(
+            tenant,
+            "Deel tenant",
+        )
+        external_source_id = tenant
+        metadata["tenant"] = tenant
 
     else:
         metadata["job_link_path"] = (
