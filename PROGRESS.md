@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _22/07/2026_
+Last updated: _27/07/2026_
 
 ---
 
@@ -36,6 +36,8 @@ Last updated: _22/07/2026_
 - [x] Schema diff logic (catches changes even through redesigns)
 - [x] Pricing-specific synthesis prompt
 - [x] Tested on Rows pricing page with a controlled change
+- [x] Provider-specific Deel pricing parser built and regression tested
+- [x] Stable live Deel pricing baseline verified across consecutive collections
 
 ### Signal Type 3 — Reviews (G2 / Capterra)
 - [ ] Live review provider integration (G2 token works, but account currently returns no entitled products)
@@ -412,8 +414,56 @@ and `JobPosting` normalization are covered by unit tests.
 - Missing workplace metadata remains unspecified rather than being
   incorrectly treated as onsite.
 
-**Follow-up:** The separate Deel pricing-page extraction failure remains the
-next provider-specific reliability task.
+**Resolved:** Deel's separate pricing-page extraction failure was resolved
+with a provider-specific structured pricing parser on 27/07/2026.
+
+---
+
+### 27/07/2026 — Deel structured pricing provider added
+
+**Decision:** Parse Deel's official pricing page with a strict
+provider-specific adapter instead of weakening the generic plan-card
+extractor.
+
+**Reason:** Deel publishes three primary cards containing five separately
+priced products. Prices and billing units are split across lines, while a
+later marketing statistic (`$20B+`) resembles a price. Treating the page as
+generic text could merge products, omit secondary prices, or store the
+marketing statistic as a plan.
+
+**Implementation:**
+
+- Recognizes official Deel pricing URLs and otherwise preserves the generic
+  pricing path.
+- Normalizes the three visible cards into five stable products: Find talent,
+  Contractor, Contractor of Record, US PEO, and Employer of Record.
+- Preserves the parent card's feature set for each separately priced product.
+- Accepts both split and combined price-and-unit lines.
+- Stops before post-pricing marketing content so `$20B+` is not interpreted
+  as a product price.
+- Rejects incomplete card sets or missing secondary prices rather than
+  storing a partial snapshot that could create false changes.
+- Bumped the pricing extractor metadata to `pricing-v1.2`.
+
+**Regression coverage:** Seven unit tests cover official URL recognition,
+all five displayed price points, feature inheritance, combined price lines,
+marketing-amount exclusion, incomplete card rejection, and missing
+secondary-price rejection.
+
+**Live verification:**
+
+- First complete snapshot: `c27c876c-f17b-469b-b0cd-451f3b487788`.
+- Second complete snapshot: `079304f6-c688-4ba3-8776-4fabe913e834`.
+- Both snapshots stored five real products at `$14`, `$49`, `$325`, `$125`,
+  and `$599`.
+- Consecutive live collections produced zero additions, removals, price
+  changes, description changes, or feature changes.
+- The clean-to-clean comparison returned `has_changes: false` and
+  `change_count: 0`.
+
+**Follow-up:** A natural Deel pricing change has not yet been observed.
+Retain the two verified live snapshots as the active baseline and let the
+scheduled pricing pipeline detect the next real movement.
 
 ---
 

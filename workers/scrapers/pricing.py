@@ -13,6 +13,7 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from playwright.async_api import (
@@ -54,6 +55,12 @@ FEATURE_LABELS = {
     "rows api calls",
     "support",
 }
+
+DEEL_CARD_NAMES = (
+    "Find talent",
+    "Hire contractors",
+    "Hire full-time employees",
+)
 
 
 def valid_uuid(value: str) -> str:
@@ -235,6 +242,202 @@ def combine_feature_lines(features: list[str]) -> list[str]:
         index += 1
 
     return combined
+
+
+def is_deel_pricing_url(url: str) -> bool:
+    """Return True for Deel's official public pricing page."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+
+    return (
+        hostname in {"deel.com", "www.deel.com"}
+        and path == "/pricing"
+    )
+
+
+def deel_option_name(
+    card_name: str,
+    unit_line: str,
+) -> str:
+    """Give each displayed Deel price point a stable product name."""
+    unit_lower = unit_line.lower()
+
+    if card_name == "Find talent":
+        return "Find talent"
+
+    if "contractor of record" in unit_lower:
+        return "Contractor of Record"
+
+    if card_name == "Hire contractors":
+        return "Contractor"
+
+    if "us peo" in unit_lower:
+        return "US PEO"
+
+    if "eor" in unit_lower:
+        return "Employer of Record"
+
+    raise RuntimeError(
+        "Could not identify a displayed Deel pricing option"
+    )
+
+
+def extract_deel_plans(text: str) -> list[dict[str, Any]]:
+    """Extract Deel products from its three primary pricing cards."""
+    lines = normalize_lines(text)
+
+    try:
+        cutoff = lines.index(
+            "Which solution is right for my business?"
+        )
+    except ValueError:
+        cutoff = len(lines)
+
+    primary_lines = lines[:cutoff]
+    starts = []
+
+    for card_name in DEEL_CARD_NAMES:
+        try:
+            starts.append(
+                (
+                    primary_lines.index(card_name),
+                    card_name,
+                )
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                f"Could not identify Deel pricing card: {card_name}"
+            ) from error
+
+    if starts != sorted(starts):
+        raise RuntimeError(
+            "Deel pricing cards appeared in an unexpected order"
+        )
+
+    plans = []
+
+    for position, (start_index, card_name) in enumerate(starts):
+        if position + 1 < len(starts):
+            end_index = starts[position + 1][0]
+        else:
+            end_index = len(primary_lines)
+
+        block = primary_lines[start_index + 1:end_index]
+
+        try:
+            demo_index = block.index("Book a demo")
+        except ValueError as error:
+            raise RuntimeError(
+                f"Deel pricing card was incomplete: {card_name}"
+            ) from error
+
+        pricing_lines = block[:demo_index]
+        feature_lines = block[demo_index + 1:]
+
+        description = None
+
+        for line in pricing_lines:
+            if line.lower() == "best for":
+                continue
+
+            if is_price_line(line):
+                break
+
+            description = line
+
+        if not description:
+            raise RuntimeError(
+                f"Deel pricing card lacked a description: {card_name}"
+            )
+
+        features = []
+
+        for line in feature_lines:
+            if should_ignore_feature(line):
+                continue
+
+            if line not in features:
+                features.append(line)
+
+        price_count = 0
+        index = 0
+
+        while index < len(pricing_lines):
+            price_line = pricing_lines[index]
+
+            if not is_price_line(price_line):
+                index += 1
+                continue
+
+            inline_unit = re.search(
+                r"\bper\b.+$",
+                price_line,
+                flags=re.IGNORECASE,
+            )
+
+            if inline_unit:
+                unit_line = inline_unit.group(0)
+                price_display = price_line
+                next_index = index + 1
+            else:
+                if index + 1 >= len(pricing_lines):
+                    raise RuntimeError(
+                        "Deel price lacked a billing unit: "
+                        f"{price_line}"
+                    )
+
+                unit_line = pricing_lines[index + 1]
+
+                if is_price_line(unit_line):
+                    raise RuntimeError(
+                        "Deel price lacked a billing unit: "
+                        f"{price_line}"
+                    )
+
+                price_display = f"{price_line} {unit_line}"
+                next_index = index + 2
+
+            plan_name = deel_option_name(
+                card_name=card_name,
+                unit_line=unit_line,
+            )
+
+            plans.append(
+                {
+                    "name": plan_name,
+                    "description": description,
+                    **parse_price(price_display),
+                    "features": features[:30],
+                }
+            )
+
+            price_count += 1
+            index = next_index
+
+        if price_count == 0:
+            raise RuntimeError(
+                f"Deel pricing card lacked a price: {card_name}"
+            )
+
+    expected_names = {
+        "Find talent",
+        "Contractor",
+        "Contractor of Record",
+        "US PEO",
+        "Employer of Record",
+    }
+    actual_names = {
+        plan["name"]
+        for plan in plans
+    }
+
+    if actual_names != expected_names:
+        raise RuntimeError(
+            "Deel pricing options were incomplete or ambiguous"
+        )
+
+    return plans
 
 
 def extract_plans(text: str) -> list[dict[str, Any]]:
@@ -428,7 +631,12 @@ async def fetch_pricing_page(url: str) -> dict[str, Any]:
 
             detect_block_page(title, visible_text)
 
-            plans = extract_plans(visible_text)
+            if is_deel_pricing_url(final_url):
+                provider = "deel"
+                plans = extract_deel_plans(visible_text)
+            else:
+                provider = "generic"
+                plans = extract_plans(visible_text)
 
             normalized_plans = json.dumps(
                 plans,
@@ -457,7 +665,8 @@ async def fetch_pricing_page(url: str) -> dict[str, Any]:
                 "final_url": final_url,
                 "title": title,
                 "status_code": status_code,
-                "extractor_version": "pricing-v1.1",
+                "provider": provider,
+                "extractor_version": "pricing-v1.2",
                 "billing_options": billing_options,
                 "plans": plans,
                 "plan_count": len(plans),
