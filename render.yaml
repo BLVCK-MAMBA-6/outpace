@@ -1,0 +1,169 @@
+services:
+  - type: keyvalue
+    name: outpace-queue
+    plan: starter
+    region: frankfurt
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+
+  - type: web
+    name: outpace-api
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: >-
+      uvicorn api.main:app
+      --host 0.0.0.0
+      --port $PORT
+      --proxy-headers
+      --forwarded-allow-ips=*
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_AUTH_REDIRECT_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-2.5-flash
+      - key: G2_API_TOKEN
+        sync: false
+      - key: G2_API_BASE_URL
+        value: https://data.g2.com
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+
+  - type: worker
+    name: outpace-worker
+    runtime: docker
+    plan: standard
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: >-
+      celery -A workers.celery_app:celery_app worker
+      --loglevel=info
+      --concurrency=1
+    maxShutdownDelaySeconds: 300
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-2.5-flash
+      - key: G2_API_TOKEN
+        sync: false
+      - key: G2_API_BASE_URL
+        value: https://data.g2.com
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: DIGEST_TO_EMAIL
+        sync: false
+      - key: DIGEST_USER_ID
+        sync: false
+      - key: MONITORING_EXCLUDED_COMPETITOR_IDS
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+
+  - type: worker
+    name: outpace-beat
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: >-
+      celery -A workers.celery_app:celery_app beat
+      --loglevel=info
+      --schedule /tmp/outpace-celerybeat-schedule
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: outpace-queue
+          property: connectionString
+
+  - type: web
+    name: outpace-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
