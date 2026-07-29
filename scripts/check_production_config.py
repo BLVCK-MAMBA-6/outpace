@@ -1,4 +1,4 @@
-"""Validate Outpace's deploy-time contract without reading secret values."""
+"""Validate Outpace's zero-cost production deployment contract."""
 
 from pathlib import Path
 from typing import Any
@@ -16,19 +16,6 @@ def fail(message: str) -> None:
     raise SystemExit(f"Deployment configuration invalid: {message}")
 
 
-def service_map(blueprint: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    services = blueprint.get("services")
-
-    if not isinstance(services, list):
-        fail("render.yaml must contain a services list")
-
-    return {
-        service["name"]: service
-        for service in services
-        if isinstance(service, dict) and "name" in service
-    }
-
-
 def env_keys(service: dict[str, Any]) -> set[str]:
     return {
         item["key"]
@@ -41,35 +28,43 @@ def main() -> None:
     blueprint = yaml.safe_load(
         BLUEPRINT_PATH.read_text(encoding="utf-8")
     )
-    services = service_map(blueprint)
 
-    expected_types = {
-        "outpace-queue": "keyvalue",
-        "outpace-api": "web",
-        "outpace-worker": "worker",
-        "outpace-beat": "worker",
-        "outpace-web": "web",
+    services = blueprint.get("services")
+
+    if not isinstance(services, list):
+        fail("render.yaml must contain a services list")
+
+    service_map = {
+        service["name"]: service
+        for service in services
+        if isinstance(service, dict) and "name" in service
     }
 
-    for name, expected_type in expected_types.items():
-        service = services.get(name)
+    expected_names = {"outpace-api", "outpace-web"}
 
-        if service is None:
-            fail(f"missing service {name}")
+    if set(service_map) != expected_names:
+        fail(
+            "free deployment must contain only "
+            "outpace-api and outpace-web"
+        )
 
-        if service.get("type") != expected_type:
-            fail(f"{name} must have type {expected_type}")
+    api = service_map["outpace-api"]
+    frontend = service_map["outpace-web"]
 
-    queue = services["outpace-queue"]
+    if api.get("type") != "web":
+        fail("outpace-api must be a web service")
 
-    if queue.get("maxmemoryPolicy") != "noeviction":
-        fail("outpace-queue must use noeviction")
+    if api.get("runtime") != "docker":
+        fail("outpace-api must use the Docker runtime")
 
-    if queue.get("persistenceMode") != "journal-snapshot":
-        fail("outpace-queue must use journal-snapshot persistence")
+    if api.get("plan") != "free":
+        fail("outpace-api must use the free plan")
 
-    if queue.get("ipAllowList") != []:
-        fail("outpace-queue must reject public network access")
+    if frontend.get("type") != "web":
+        fail("outpace-web must be a web service")
+
+    if frontend.get("runtime") != "static":
+        fail("outpace-web must use the static runtime")
 
     api_required = {
         "SUPABASE_URL",
@@ -78,37 +73,38 @@ def main() -> None:
         "SUPABASE_AUTH_REDIRECT_URL",
         "FRONTEND_URL",
         "GEMINI_API_KEY",
-        "REDIS_URL",
-        "CELERY_RESULT_BACKEND",
     }
-    worker_required = {
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "GEMINI_API_KEY",
-        "RESEND_API_KEY",
-        "RESEND_FROM_EMAIL",
-        "DIGEST_TO_EMAIL",
-        "DIGEST_USER_ID",
-        "REDIS_URL",
-        "CELERY_RESULT_BACKEND",
-    }
+
     frontend_required = {
         "VITE_SUPABASE_URL",
         "VITE_SUPABASE_PUBLISHABLE_KEY",
         "VITE_API_URL",
     }
 
-    checks = (
-        ("outpace-api", api_required),
-        ("outpace-worker", worker_required),
-        ("outpace-web", frontend_required),
-    )
-
-    for name, required in checks:
-        missing = required - env_keys(services[name])
+    for name, service, required in (
+        ("outpace-api", api, api_required),
+        ("outpace-web", frontend, frontend_required),
+    ):
+        missing = required - env_keys(service)
 
         if missing:
             fail(f"{name} is missing {sorted(missing)}")
+
+    blueprint_text = BLUEPRINT_PATH.read_text(encoding="utf-8")
+
+    forbidden = (
+        "outpace-queue",
+        "outpace-worker",
+        "outpace-beat",
+        "type: worker",
+        "type: keyvalue",
+        "plan: starter",
+        "plan: standard",
+    )
+
+    for value in forbidden:
+        if value in blueprint_text:
+            fail(f"paid or persistent resource remains: {value}")
 
     frontend_text = FRONTEND_ENV_PATH.read_text(encoding="utf-8")
 
@@ -121,10 +117,10 @@ def main() -> None:
         fail("Dockerfile must pin the Python base image")
 
     if "playwright install --with-deps chromium" not in dockerfile:
-        fail("Dockerfile must install Chromium and its OS dependencies")
+        fail("Dockerfile must install Chromium")
 
-    print("Deployment configuration passed")
-    print("Services:", ", ".join(sorted(services)))
+    print("Free deployment configuration passed")
+    print("Services:", ", ".join(sorted(service_map)))
 
 
 if __name__ == "__main__":
