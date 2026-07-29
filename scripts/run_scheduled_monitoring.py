@@ -3,7 +3,7 @@
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+from api.utils.supabase_client import get_supabase_client
 from workers.tasks import (
     list_competitors,
     list_enabled_sources,
@@ -27,6 +28,223 @@ from workers.tasks import (
 
 
 TaskRunner = Callable[[str], dict[str, Any]]
+
+DATABASE_TASKS = {
+    "general": monitor_general,
+    "pricing": monitor_pricing,
+    "reviews": monitor_reviews,
+    "jobs": monitor_jobs,
+    "news": monitor_news,
+}
+
+
+def utc_now() -> datetime:
+    """Return an aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+def json_safe(value: Any) -> Any:
+    """Convert task results to JSON-compatible values."""
+    return json.loads(
+        json.dumps(value, default=str)
+    )
+
+
+def recover_interrupted_tasks() -> int:
+    """Return old STARTED tasks to the pending queue."""
+    db = get_supabase_client()
+    cutoff = (
+        utc_now() - timedelta(hours=4)
+    ).isoformat()
+
+    result = (
+        db.table("monitoring_tasks")
+        .update(
+            {
+                "state": "PENDING",
+                "started_at": None,
+                "updated_at": utc_now().isoformat(),
+                "error": (
+                    "Previous runner stopped before completion; "
+                    "task was queued again."
+                ),
+            }
+        )
+        .eq("execution_backend", "database")
+        .eq("state", "STARTED")
+        .lt("started_at", cutoff)
+        .execute()
+    )
+
+    return len(result.data or [])
+
+
+def claim_pending_task(
+    task_id: str,
+) -> dict[str, Any] | None:
+    """Atomically claim one pending database task."""
+    db = get_supabase_client()
+    now = utc_now().isoformat()
+
+    result = (
+        db.table("monitoring_tasks")
+        .update(
+            {
+                "state": "STARTED",
+                "started_at": now,
+                "completed_at": None,
+                "updated_at": now,
+                "result": None,
+                "error": None,
+            }
+        )
+        .eq("task_id", task_id)
+        .eq("execution_backend", "database")
+        .eq("state", "PENDING")
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+def finish_database_task(
+    task_id: str,
+    result: dict[str, Any],
+) -> None:
+    """Persist a successful database task result."""
+    now = utc_now().isoformat()
+
+    (
+        get_supabase_client()
+        .table("monitoring_tasks")
+        .update(
+            {
+                "state": "SUCCESS",
+                "result": json_safe(result),
+                "error": None,
+                "completed_at": now,
+                "updated_at": now,
+            }
+        )
+        .eq("task_id", task_id)
+        .eq("state", "STARTED")
+        .execute()
+    )
+
+
+def fail_database_task(
+    task_id: str,
+    error: Exception,
+) -> None:
+    """Persist a failed database task result."""
+    now = utc_now().isoformat()
+
+    (
+        get_supabase_client()
+        .table("monitoring_tasks")
+        .update(
+            {
+                "state": "FAILURE",
+                "result": None,
+                "error": str(error)[:4000],
+                "completed_at": now,
+                "updated_at": now,
+            }
+        )
+        .eq("task_id", task_id)
+        .eq("state", "STARTED")
+        .execute()
+    )
+
+
+def run_pending_tasks(
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Run pending user-requested tasks from Supabase."""
+    db = get_supabase_client()
+    recovered = recover_interrupted_tasks()
+
+    if recovered:
+        print(
+            f"Recovered {recovered} interrupted task(s).",
+            flush=True,
+        )
+
+    pending_result = (
+        db.table("monitoring_tasks")
+        .select(
+            "task_id,signal_type,target_id,"
+            "target_type,created_at"
+        )
+        .eq("execution_backend", "database")
+        .eq("state", "PENDING")
+        .order("created_at")
+        .limit(limit)
+        .execute()
+    )
+
+    results: list[dict[str, Any]] = []
+
+    for pending in pending_result.data or []:
+        task_id = str(pending["task_id"])
+        claimed = claim_pending_task(task_id)
+
+        if claimed is None:
+            continue
+
+        signal_type = str(claimed["signal_type"])
+        target_id = str(claimed["target_id"])
+        task = DATABASE_TASKS.get(signal_type)
+
+        print(
+            f"Running requested {signal_type}: {target_id}",
+            flush=True,
+        )
+
+        if task is None:
+            error = ValueError(
+                f"Unsupported queued signal: {signal_type}"
+            )
+            fail_database_task(task_id, error)
+            results.append(
+                {
+                    "signal_type": signal_type,
+                    "target_id": target_id,
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": str(error),
+                }
+            )
+            continue
+
+        try:
+            task_result = task.run(target_id)
+            finish_database_task(task_id, task_result)
+            results.append(
+                {
+                    "signal_type": signal_type,
+                    "target_id": target_id,
+                    "task_id": task_id,
+                    "status": "success",
+                    "result": task_result,
+                }
+            )
+        except Exception as error:
+            fail_database_task(task_id, error)
+            results.append(
+                {
+                    "signal_type": signal_type,
+                    "target_id": target_id,
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": str(error),
+                }
+            )
+
+    return results
 
 
 def run_targets(
@@ -147,6 +365,7 @@ def parse_arguments() -> argparse.Namespace:
             "jobs",
             "news",
             "digest",
+            "pending",
         ],
         default="scheduled",
     )
@@ -156,7 +375,7 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_arguments()
-    now = datetime.now(timezone.utc)
+    now = utc_now()
 
     if args.scope == "scheduled":
         signals = scheduled_signals(now)
@@ -173,6 +392,9 @@ def main() -> None:
     elif args.scope == "digest":
         signals = []
         send_digest = True
+    elif args.scope == "pending":
+        signals = []
+        send_digest = False
     else:
         signals = [args.scope]
         send_digest = False
@@ -183,7 +405,7 @@ def main() -> None:
         flush=True,
     )
 
-    results: list[dict[str, Any]] = []
+    results = run_pending_tasks()
 
     for signal_type in signals:
         results.extend(run_signal(signal_type))

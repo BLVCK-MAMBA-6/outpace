@@ -3,6 +3,7 @@ name: Outpace Scheduled Monitoring
 on:
   schedule:
     - cron: "15 6,18 * * *"
+    - cron: "45 */2 * * *"
 
   workflow_dispatch:
     inputs:
@@ -20,6 +21,7 @@ on:
           - jobs
           - news
           - digest
+          - pending
 
 permissions:
   contents: read
@@ -56,22 +58,57 @@ jobs:
       MONITORING_EXCLUDED_COMPETITOR_IDS: ${{ secrets.MONITORING_EXCLUDED_COMPETITOR_IDS }}
 
     steps:
+      - name: Select monitoring scope
+        id: plan
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            scope="${{ inputs.scope }}"
+          elif [[ "${{ github.event.schedule }}" == "45 */2 * * *" ]]; then
+            scope="pending"
+          else
+            scope="scheduled"
+          fi
+
+          should_run="true"
+
+          if [[ "$scope" == "pending" ]]; then
+            response="$(
+              curl --fail --silent --show-error \
+                "${SUPABASE_URL}/rest/v1/monitoring_tasks?execution_backend=eq.database&state=eq.PENDING&select=task_id&limit=1" \
+                -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+                -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+            )"
+
+            if [[ "$response" == "[]" ]]; then
+              should_run="false"
+            fi
+          fi
+
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+
       - name: Check out repository
+        if: steps.plan.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.plan.outputs.should_run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install Python dependencies
+        if: steps.plan.outputs.should_run == 'true'
         run: python -m pip install -r requirements.txt
 
       - name: Install Chromium
+        if: steps.plan.outputs.should_run == 'true'
         run: python -m playwright install --with-deps chromium
 
       - name: Run scheduled monitoring
+        if: steps.plan.outputs.should_run == 'true'
         run: >-
           python scripts/run_scheduled_monitoring.py
-          --scope "${{ github.event_name == 'workflow_dispatch' && inputs.scope || 'scheduled' }}"
+          --scope "${{ steps.plan.outputs.scope }}"

@@ -37,6 +37,8 @@ services:
         sync: false
       - key: G2_API_BASE_URL
         value: https://data.g2.com
+      - key: MONITORING_EXECUTION_BACKEND
+        value: database
 
   - type: web
     name: outpace-web

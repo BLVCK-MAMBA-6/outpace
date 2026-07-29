@@ -249,7 +249,7 @@ class MonitoringEnqueueRequest(BaseModel):
 
 
 class TaskQueuedResponse(BaseModel):
-    """Queued Celery task information."""
+    """Queued monitoring task information."""
 
     status: Literal["queued"]
     task_id: str
@@ -258,7 +258,7 @@ class TaskQueuedResponse(BaseModel):
 
 
 class TaskStatusResponse(BaseModel):
-    """Current state of a Celery task."""
+    """Current state of a monitoring task."""
 
     task_id: str
     state: str

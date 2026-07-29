@@ -1,7 +1,8 @@
 """
-Authenticated pipeline processing and Celery task endpoints.
+Authenticated pipeline processing and monitoring task endpoints.
 """
 
+import os
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -49,10 +50,61 @@ SOURCE_TABLES = {
     "news": "news_sources",
 }
 
+DATABASE_BACKEND = "database"
+CELERY_BACKEND = "celery"
+
 
 def _signal_value(signal_type: Any) -> str:
     """Return the database value for a string enum."""
     return getattr(signal_type, "value", str(signal_type))
+
+
+def _execution_backend() -> str:
+    """Return the configured monitoring task backend."""
+    value = os.getenv(
+        "MONITORING_EXECUTION_BACKEND",
+        CELERY_BACKEND,
+    ).strip().lower()
+
+    if value not in {
+        CELERY_BACKEND,
+        DATABASE_BACKEND,
+    }:
+        raise RuntimeError(
+            "MONITORING_EXECUTION_BACKEND must be "
+            "'celery' or 'database'"
+        )
+
+    return value
+
+
+def _database_task_response(
+    task: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate a persisted task row to the API contract."""
+    state = str(task.get("state") or "PENDING")
+    ready = state in {"SUCCESS", "FAILURE"}
+    result = task.get("result")
+
+    if result is not None and not isinstance(result, dict):
+        result = {"value": result}
+
+    return {
+        "task_id": str(task["task_id"]),
+        "state": state,
+        "ready": ready,
+        "successful": (
+            state == "SUCCESS"
+            if ready
+            else None
+        ),
+        "result": result if state == "SUCCESS" else None,
+        "error": (
+            str(task["error"])
+            if state == "FAILURE" and task.get("error")
+            else None
+        ),
+    }
 
 
 def _require_owned_competitor(
@@ -191,8 +243,6 @@ def enqueue_monitoring(
 
         target_id = str(request.competitor_id)
         target_type = "competitor"
-        task_function = COMPETITOR_TASKS[signal_type]
-
         _require_owned_competitor(
             competitor_id=target_id,
             user_id=user_id,
@@ -210,13 +260,47 @@ def enqueue_monitoring(
 
         target_id = str(request.source_id)
         target_type = "source"
-        task_function = SOURCE_TASKS[signal_type]
-
         _require_owned_source(
             signal_type=signal_type,
             source_id=target_id,
             user_id=user_id,
         )
+
+    execution_backend = _execution_backend()
+
+    if execution_backend == DATABASE_BACKEND:
+        try:
+            existing_result = (
+                supabase.table("monitoring_tasks")
+                .select("task_id")
+                .eq("user_id", user_id)
+                .eq("signal_type", signal_type)
+                .eq("target_type", target_type)
+                .eq("target_id", target_id)
+                .eq("execution_backend", DATABASE_BACKEND)
+                .in_("state", ["PENDING", "STARTED"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as error:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to check pending monitoring tasks: "
+                    f"{error}"
+                ),
+            ) from error
+
+        if existing_result.data:
+            return {
+                "status": "queued",
+                "task_id": str(
+                    existing_result.data[0]["task_id"]
+                ),
+                "signal_type": signal_type,
+                "target_id": target_id,
+            }
 
     task_id = str(uuid4())
 
@@ -226,6 +310,8 @@ def enqueue_monitoring(
         "signal_type": signal_type,
         "target_type": target_type,
         "target_id": target_id,
+        "execution_backend": execution_backend,
+        "state": "PENDING",
     }
 
     try:
@@ -240,10 +326,15 @@ def enqueue_monitoring(
                 "Database returned no monitoring task"
             )
 
-        task_function.apply_async(
-            args=[target_id],
-            task_id=task_id,
-        )
+        if execution_backend == CELERY_BACKEND:
+            task_function = (
+                COMPETITOR_TASKS.get(signal_type)
+                or SOURCE_TASKS[signal_type]
+            )
+            task_function.apply_async(
+                args=[target_id],
+                task_id=task_id,
+            )
 
     except HTTPException:
         raise
@@ -282,14 +373,17 @@ def get_task_status(
         get_current_user
     ),
 ):
-    """Return a Celery task only when owned by this user."""
+    """Return a monitoring task only when owned by this user."""
     task_id_value = str(task_id)
     user_id = str(current_user.id)
 
     try:
         ownership_result = (
             supabase.table("monitoring_tasks")
-            .select("task_id")
+            .select(
+                "task_id,execution_backend,state,"
+                "result,error"
+            )
             .eq("task_id", task_id_value)
             .eq("user_id", user_id)
             .limit(1)
@@ -306,6 +400,14 @@ def get_task_status(
             status_code=404,
             detail="Monitoring task not found",
         )
+
+    tracking_task = ownership_result.data[0]
+
+    if (
+        tracking_task.get("execution_backend")
+        == DATABASE_BACKEND
+    ):
+        return _database_task_response(tracking_task)
 
     task = AsyncResult(
         task_id_value,
