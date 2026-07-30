@@ -17,6 +17,7 @@ from workers.scrapers.jobs import (  # noqa: E402
     deel_listing_jobs,
     deel_listing_jobs_from_html,
     fetch_deel_job,
+    fetch_deel_jobs,
     find_json_ld,
     parse_deel_job_posting,
     parse_greenhouse_jobs,
@@ -206,6 +207,105 @@ class JobProviderParserTests(TestCase):
         self.assertEqual(mocked_get.call_count, 2)
         self.assertEqual(job["title"], "Sales Manager")
 
+    def test_deel_retries_successful_page_without_json_ld(
+        self,
+    ) -> None:
+        job_id = "b1bf0dc5-f27b-4d3d-a51c-883feffcf2d4"
+        listing = {
+            "id": job_id,
+            "url": (
+                "https://jobs.deel.com/deel/job-details/"
+                f"{job_id}/overview"
+            ),
+            "title": "",
+        }
+        unstructured_response = types.SimpleNamespace(
+            status_code=200,
+            text="<html><title>Loading role</title></html>",
+            raise_for_status=lambda: None,
+        )
+        structured_response = types.SimpleNamespace(
+            status_code=200,
+            text=(
+                '<script type="application/ld+json">'
+                '{"@type":"JobPosting","title":"Sales Manager"}'
+                "</script>"
+            ),
+            raise_for_status=lambda: None,
+        )
+
+        with (
+            patch(
+                "workers.scrapers.jobs.httpx.get",
+                side_effect=[
+                    unstructured_response,
+                    structured_response,
+                ],
+            ) as mocked_get,
+            patch("workers.scrapers.jobs.time.sleep"),
+        ):
+            job = fetch_deel_job(listing)
+
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertEqual(job["title"], "Sales Manager")
+
+    def test_deel_retries_failed_subset_sequentially(
+        self,
+    ) -> None:
+        first = {
+            "id": "first",
+            "url": "https://example.com/first",
+            "title": "First",
+        }
+        second = {
+            "id": "second",
+            "url": "https://example.com/second",
+            "title": "Second",
+        }
+        recovered = {
+            "id": "deel:first",
+            "title": "First",
+        }
+        stable = {
+            "id": "deel:second",
+            "title": "Second",
+        }
+        attempts = {
+            "first": 0,
+            "second": 0,
+        }
+
+        def fetch(listing):
+            attempts[listing["id"]] += 1
+            if (
+                listing["id"] == "first"
+                and attempts["first"] == 1
+            ):
+                raise ValueError(
+                    "temporary unstructured page"
+                )
+            return (
+                recovered
+                if listing["id"] == "first"
+                else stable
+            )
+
+        with (
+            patch(
+                "workers.scrapers.jobs.fetch_deel_job",
+                side_effect=fetch,
+            ),
+            patch("workers.scrapers.jobs.time.sleep"),
+        ):
+            jobs, failures, retry_count = fetch_deel_jobs(
+                [first, second]
+            )
+
+        self.assertEqual(retry_count, 1)
+        self.assertEqual(failures, [])
+        self.assertCountEqual(jobs, [stable, recovered])
+        self.assertEqual(attempts, {"first": 2, "second": 1})
+
     def test_deel_rejects_listed_job_returning_404(self) -> None:
         response = types.SimpleNamespace(
             status_code=404,
@@ -213,9 +313,12 @@ class JobProviderParserTests(TestCase):
             raise_for_status=lambda: None,
         )
 
-        with patch(
-            "workers.scrapers.jobs.httpx.get",
-            return_value=response,
+        with (
+            patch(
+                "workers.scrapers.jobs.httpx.get",
+                return_value=response,
+            ),
+            patch("workers.scrapers.jobs.time.sleep"),
         ):
             with self.assertRaisesRegex(
                 ValueError,

@@ -8,8 +8,6 @@ import {
   useParams,
 } from 'react-router-dom'
 
-import '../styles/source-health.css'
-
 import {
   BriefDetailPanel,
 } from '../components/BriefDetailPanel'
@@ -63,20 +61,10 @@ const signalDetails: Record<
   },
 }
 
-const healthLabels = {
-  unconfigured: 'Needs source',
-  disabled: 'Disabled',
-  pending: 'Awaiting baseline',
-  healthy: 'Healthy',
-  degraded: 'Degraded',
-  blocked: 'Access blocked',
-  unsupported: 'Unsupported',
-  failed: 'Check failed',
-} as const
-
 type TaskFeedback = {
-  state: 'running' | 'success' | 'error'
+  state: 'running' | 'queued' | 'success' | 'error'
   message: string
+  taskId?: string
 }
 
 function formatDate(value: string | null) {
@@ -112,9 +100,7 @@ async function waitForTask(taskId: string) {
     await wait(1500)
   }
 
-  throw new Error(
-    'Monitoring is still running. Check again shortly.',
-  )
+  return null
 }
 
 export function CompetitorDetailPage() {
@@ -241,24 +227,10 @@ export function CompetitorDetailPage() {
           body: JSON.stringify(payload),
         },
       )
-      const completed = await waitForTask(
+      await trackMonitoringTask(
+        signal.signal_type,
         queued.task_id,
       )
-
-      if (!completed.successful) {
-        throw new Error(
-          completed.error ?? 'Monitoring task failed',
-        )
-      }
-
-      setTaskFeedback((current) => ({
-        ...current,
-        [signal.signal_type]: {
-          state: 'success',
-          message: 'Collection completed',
-        },
-      }))
-      setRefreshKey((current) => current + 1)
     } catch (requestError) {
       setTaskFeedback((current) => ({
         ...current,
@@ -270,7 +242,63 @@ export function CompetitorDetailPage() {
               : 'Monitoring could not be started',
         },
       }))
+    }
+  }
+
+  async function trackMonitoringTask(
+    signalType: SignalType,
+    taskId: string,
+  ) {
+    setTaskFeedback((current) => ({
+      ...current,
+      [signalType]: {
+        state: 'running',
+        message: 'Checking task status…',
+        taskId,
+      },
+    }))
+
+    try {
+      const completed = await waitForTask(taskId)
+
+      if (completed === null) {
+        setTaskFeedback((current) => ({
+          ...current,
+          [signalType]: {
+            state: 'queued',
+            message:
+              'Queued for background monitoring. It may take up to two hours on the free plan.',
+            taskId,
+          },
+        }))
+        return
+      }
+
+      if (!completed.successful) {
+        throw new Error(
+          completed.error ?? 'Monitoring task failed',
+        )
+      }
+
+      setTaskFeedback((current) => ({
+        ...current,
+        [signalType]: {
+          state: 'success',
+          message: 'Collection completed',
+        },
+      }))
       setRefreshKey((current) => current + 1)
+    } catch (requestError) {
+      setTaskFeedback((current) => ({
+        ...current,
+        [signalType]: {
+          state: 'error',
+          message:
+            requestError instanceof Error
+              ? requestError.message
+              : 'Monitoring could not be started',
+        },
+      }))
     }
   }
 
@@ -397,9 +425,6 @@ export function CompetitorDetailPage() {
               signal.configured &&
               signal.enabled &&
               !fixture
-            const healthClass = fixture
-              ? 'fixture'
-              : signal.health_status
 
             return (
               <article
@@ -421,11 +446,23 @@ export function CompetitorDetailPage() {
 
                 <div className="signal-control-row__status">
                   <span
-                    className={`signal-state signal-state--${healthClass}`}
+                    className={
+                      `signal-state ${
+                        fixture
+                          ? 'signal-state--fixture'
+                          : runnable
+                            ? 'signal-state--active'
+                            : 'signal-state--missing'
+                      }`
+                    }
                   >
                     {fixture
                       ? 'Test fixture'
-                      : healthLabels[signal.health_status]}
+                      : runnable
+                        ? 'Active'
+                        : signal.configured
+                          ? 'Disabled'
+                          : 'Needs source'}
                   </span>
                   <p>
                     Latest snapshot
@@ -433,24 +470,6 @@ export function CompetitorDetailPage() {
                       {formatDate(signal.latest_snapshot_at)}
                     </strong>
                   </p>
-                  {signal.last_error_message &&
-                    signal.health_status !== 'healthy' && (
-                      <p
-                        className="source-health-error"
-                        title={signal.last_error_message}
-                      >
-                        {signal.last_error_message}
-                      </p>
-                    )}
-                  {signal.consecutive_failures > 0 && (
-                    <small className="source-health-failures">
-                      {signal.consecutive_failures}{' '}
-                      consecutive failure
-                      {signal.consecutive_failures === 1
-                        ? ''
-                        : 's'}
-                    </small>
-                  )}
                 </div>
 
                 <div className="signal-control-row__brief">
@@ -482,11 +501,24 @@ export function CompetitorDetailPage() {
                       feedback?.state === 'running'
                     }
                     onClick={() => {
+                      if (
+                        feedback?.state === 'queued' &&
+                        feedback.taskId
+                      ) {
+                        void trackMonitoringTask(
+                          signal.signal_type,
+                          feedback.taskId,
+                        )
+                        return
+                      }
+
                       void runMonitoring(signal)
                     }}
                   >
                     {feedback?.state === 'running'
                       ? 'Checking…'
+                      : feedback?.state === 'queued'
+                        ? 'Check status'
                       : fixture
                         ? 'Fixture only'
                         : runnable

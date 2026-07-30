@@ -971,6 +971,11 @@ DEEL_RETRYABLE_STATUS_CODES = {
     504,
 }
 
+DEEL_DETAIL_ATTEMPTS = 3
+DEEL_DETAIL_WORKERS = 2
+DEEL_BATCH_PAUSE_SECONDS = 0.75
+DEEL_FINAL_RETRY_PAUSE_SECONDS = 5
+
 
 def iter_json_ld_nodes(value: Any):
     """Yield nested JSON-LD objects without assuming one page shape."""
@@ -1261,10 +1266,9 @@ def fetch_deel_job(
     listing: dict[str, str],
 ) -> dict[str, Any]:
     """Fetch one public Deel detail page and parse JobPosting JSON-LD."""
-    response = None
-    last_transport_error = None
+    last_error: Exception | None = None
 
-    for attempt in range(3):
+    for attempt in range(DEEL_DETAIL_ATTEMPTS):
         try:
             response = httpx.get(
                 listing["url"],
@@ -1275,57 +1279,126 @@ def fetch_deel_job(
                         "Outpace-Competitive-Monitor/1.0"
                     ),
                     "Accept": "text/html,application/xhtml+xml",
+                    "Cache-Control": "no-cache",
                 },
             )
         except httpx.TransportError as error:
-            last_transport_error = error
-            if attempt < 2:
+            last_error = error
+            if attempt < DEEL_DETAIL_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)
             continue
 
-        if (
+        if response.status_code == 404:
+            last_error = ValueError(
+                f"Deel job {listing['id']} returned 404 while still "
+                "present on the public board"
+            )
+        elif (
             response.status_code
-            not in DEEL_RETRYABLE_STATUS_CODES
+            in DEEL_RETRYABLE_STATUS_CODES
         ):
-            break
-        if attempt < 2:
+            last_error = ValueError(
+                f"Deel job {listing['id']} returned retryable "
+                f"HTTP {response.status_code}"
+            )
+        else:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPError as error:
+                last_error = error
+            else:
+                posting = find_json_ld(
+                    response.text,
+                    "JobPosting",
+                )
+                if posting:
+                    if not (
+                        posting.get("occupationalCategory")
+                        or posting.get("department")
+                    ):
+                        posting = dict(posting)
+                        posting["department"] = (
+                            deel_embedded_org_department(
+                                response.text
+                            )
+                        )
+                    return parse_deel_job_posting(
+                        posting=posting,
+                        job_id=listing["id"],
+                        detail_url=listing["url"],
+                        fallback_title=listing["title"],
+                    )
+
+                # Deel occasionally returns a successful transitional
+                # page before its JobPosting data is available. Treat
+                # this as retryable rather than rejecting the entire
+                # source after a single unstructured response.
+                last_error = ValueError(
+                    f"Deel job {listing['id']} did not expose "
+                    "JobPosting JSON-LD"
+                )
+
+        if attempt < DEEL_DETAIL_ATTEMPTS - 1:
             time.sleep(2 ** attempt)
 
-    if response is None:
-        raise ValueError(
-            f"Deel job {listing['id']} request failed after "
-            f"three attempts: {last_transport_error}"
-        )
-
-    if response.status_code == 404:
-        raise ValueError(
-            f"Deel job {listing['id']} returned 404 while still "
-            "present on the public board"
-        )
-
-    response.raise_for_status()
-    posting = find_json_ld(
-        response.text,
-        "JobPosting",
+    raise ValueError(
+        f"Deel job {listing['id']} could not be parsed after "
+        f"{DEEL_DETAIL_ATTEMPTS} attempts: {last_error}"
     )
-    if not posting:
-        raise ValueError(
-            f"Deel job {listing['id']} did not expose JobPosting JSON-LD"
-        )
-    if not (
-        posting.get("occupationalCategory")
-        or posting.get("department")
-    ):
-        posting = dict(posting)
-        posting["department"] = deel_embedded_org_department(
-            response.text
-        )
-    return parse_deel_job_posting(
-        posting=posting,
-        job_id=listing["id"],
-        detail_url=listing["url"],
-        fallback_title=listing["title"],
-    )
+
+
+def fetch_deel_jobs(
+    listings: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """Fetch Deel details politely, then retry failures sequentially."""
+    jobs = []
+    failed_listings: list[
+        tuple[dict[str, str], Exception]
+    ] = []
+
+    for offset in range(0, len(listings), DEEL_DETAIL_WORKERS):
+        batch = listings[
+            offset:offset + DEEL_DETAIL_WORKERS
+        ]
+        with ThreadPoolExecutor(
+            max_workers=len(batch)
+        ) as executor:
+            futures = {
+                executor.submit(
+                    fetch_deel_job,
+                    listing,
+                ): listing
+                for listing in batch
+            }
+            for future in as_completed(futures):
+                listing = futures[future]
+                try:
+                    jobs.append(future.result())
+                except (httpx.HTTPError, ValueError) as error:
+                    failed_listings.append((listing, error))
+
+        if offset + len(batch) < len(listings):
+            time.sleep(DEEL_BATCH_PAUSE_SECONDS)
+
+    retry_count = len(failed_listings)
+    final_failures = []
+
+    if failed_listings:
+        time.sleep(DEEL_FINAL_RETRY_PAUSE_SECONDS)
+
+    # Shared CI runner IPs are more likely to receive transient,
+    # unstructured Deel pages. Retrying the small failed subset
+    # sequentially avoids compounding provider pressure.
+    for listing, initial_error in failed_listings:
+        try:
+            jobs.append(fetch_deel_job(listing))
+        except (httpx.HTTPError, ValueError) as error:
+            final_failures.append(
+                f"{listing['id']}: {error} "
+                f"(initial failure: {initial_error})"
+            )
+
+    return jobs, final_failures, retry_count
 
 
 def fetch_deel_payload(
@@ -1382,32 +1455,9 @@ def fetch_deel_payload(
             "Deel board did not expose stable public job identifiers"
         )
 
-    jobs = []
-    failures = []
-
-    # Deel rate-limits aggressive detail crawling. Three workers and a
-    # short pause between batches keep the collector intentionally polite.
-    for offset in range(0, len(listings), 3):
-        batch = listings[offset:offset + 3]
-        with ThreadPoolExecutor(
-            max_workers=len(batch)
-        ) as executor:
-            futures = {
-                executor.submit(fetch_deel_job, listing): listing
-                for listing in batch
-            }
-            for future in as_completed(futures):
-                listing = futures[future]
-                try:
-                    job = future.result()
-                except (httpx.HTTPError, ValueError) as error:
-                    failures.append(
-                        f"{listing['id']}: {error}"
-                    )
-                    continue
-                jobs.append(job)
-        if offset + len(batch) < len(listings):
-            time.sleep(0.4)
+    jobs, failures, retry_count = fetch_deel_jobs(
+        listings
+    )
 
     if failures:
         failure_preview = "; ".join(failures[:3])
@@ -1432,6 +1482,7 @@ def fetch_deel_payload(
             "resolved_endpoint": str(response.url),
             "listing_source": listing_source,
             "listed_job_count": len(listings),
+            "retried_detail_count": retry_count,
             "detail_failure_count": len(failures),
             "detail_failures": failures[:10],
         },

@@ -10,9 +10,10 @@ on:
       scope:
         description: Monitoring scope to run
         required: true
-        default: scheduled
+        default: pending
         type: choice
         options:
+          - pending
           - scheduled
           - all
           - general
@@ -21,7 +22,6 @@ on:
           - jobs
           - news
           - digest
-          - pending
 
 permissions:
   contents: read

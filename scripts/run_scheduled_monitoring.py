@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,6 +48,32 @@ def json_safe(value: Any) -> Any:
     """Convert task results to JSON-compatible values."""
     return json.loads(
         json.dumps(value, default=str)
+    )
+
+
+def github_annotation(
+    level: str,
+    title: str,
+    message: str,
+) -> None:
+    """Write a readable GitHub Actions annotation when running in CI."""
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        return
+
+    def escape(value: str) -> str:
+        return (
+            value
+            .replace("%", "%25")
+            .replace("\r", "%0D")
+            .replace("\n", "%0A")
+            .replace(":", "%3A")
+            .replace(",", "%2C")
+        )
+
+    print(
+        f"::{level} title={escape(title)}::"
+        f"{escape(message[:4000])}",
+        flush=True,
     )
 
 
@@ -442,12 +469,31 @@ def main() -> None:
         "task_count": len(results),
         "success_count": len(results) - len(failed),
         "failure_count": len(failed),
+        "status": (
+            "partial_failure"
+            if failed and len(failed) < len(results)
+            else "failure"
+            if failed
+            else "success"
+        ),
     }
 
     print(json.dumps(summary, indent=2))
 
     if failed:
         print(json.dumps(failed, indent=2, default=str))
+        for failure in failed:
+            github_annotation(
+                level="error",
+                title=(
+                    "Monitoring source failed: "
+                    f"{failure.get('signal_type', 'unknown')}"
+                ),
+                message=(
+                    f"Target {failure.get('target_id', 'unknown')}: "
+                    f"{failure.get('error', 'Unknown error')}"
+                ),
+            )
         raise SystemExit(1)
 
 
