@@ -322,18 +322,29 @@ def render_digest_text(
 def send_email(
     briefs: list[dict[str, Any]],
     test_mode: bool = False,
+    recipient_email: str | None = None,
 ) -> dict[str, Any]:
     """Send one rendered digest through Resend."""
+    if not test_mode and not recipient_email:
+        raise ValueError(
+            "Production digest delivery requires "
+            "an explicit recipient"
+        )
+
     api_key = os.getenv("RESEND_API_KEY")
     from_email = os.getenv("RESEND_FROM_EMAIL")
-    to_email = os.getenv("DIGEST_TO_EMAIL")
+    to_email = (
+        recipient_email
+        or os.getenv("DIGEST_TEST_EMAIL")
+        or ""
+    ).strip().lower()
 
     missing = [
         key
         for key, value in {
             "RESEND_API_KEY": api_key,
             "RESEND_FROM_EMAIL": from_email,
-            "DIGEST_TO_EMAIL": to_email,
+            "DIGEST_RECIPIENT": to_email,
         }.items()
         if not value
     ]
@@ -445,9 +456,10 @@ def get_undelivered_briefs(
 
 
 def mark_delivered(
+    user_id: str,
     brief_ids: list[str],
 ) -> None:
-    """Mark successfully emailed briefs as delivered."""
+    """Mark one user's successfully emailed briefs as delivered."""
     if not brief_ids:
         return
 
@@ -456,16 +468,85 @@ def mark_delivered(
     (
         db.table("briefs")
         .update({"delivered": True})
+        .eq("user_id", user_id)
         .in_("id", brief_ids)
         .execute()
     )
 
 
+def mark_digest_sent(
+    user_id: str,
+) -> None:
+    """Record the latest successful digest delivery."""
+    db = get_supabase_client()
+
+    (
+        db.table("digest_preferences")
+        .update(
+            {
+                "last_sent_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+                "updated_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        )
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
+def list_enabled_digest_preferences(
+) -> list[dict[str, Any]]:
+    """Return every user who opted into weekly delivery."""
+    db = get_supabase_client()
+
+    result = (
+        db.table("digest_preferences")
+        .select(
+            "user_id,delivery_email,"
+            "frequency,last_sent_at"
+        )
+        .eq("enabled", True)
+        .eq("frequency", "weekly")
+        .execute()
+    )
+
+    return result.data or []
+
+
+def validate_recipient_email(
+    recipient_email: str,
+) -> str:
+    """Defensively validate one stored delivery address."""
+    email = recipient_email.strip().lower()
+
+    if (
+        "@" not in email
+        or email.startswith("@")
+        or email.endswith("@")
+        or " " in email
+    ):
+        raise ValueError(
+            "Digest preference has an invalid "
+            "delivery email"
+        )
+
+    return email
+
+
 def send_weekly_digest(
     user_id: str,
+    recipient_email: str,
 ) -> dict[str, Any]:
-    """Send real undelivered briefs and mark them delivered."""
-    briefs = get_undelivered_briefs(user_id)
+    """Send one user's real briefs and mark successful delivery."""
+    email = validate_recipient_email(
+        recipient_email
+    )
+    briefs = get_undelivered_briefs(
+        user_id
+    )
 
     if not briefs:
         return {
@@ -480,19 +561,101 @@ def send_weekly_digest(
     result = send_email(
         briefs=briefs,
         test_mode=False,
+        recipient_email=email,
     )
+    brief_ids = [
+        brief["id"]
+        for brief in briefs
+    ]
 
     mark_delivered(
-        [brief["id"] for brief in briefs]
+        user_id,
+        brief_ids,
+    )
+    mark_digest_sent(
+        user_id
     )
 
     return {
         **result,
         "user_id": user_id,
-        "brief_ids": [
-            brief["id"]
-            for brief in briefs
-        ],
+        "brief_ids": brief_ids,
+    }
+
+
+def send_all_weekly_digests(
+) -> dict[str, Any]:
+    """Process every opted-in user without stopping at one failure."""
+    preferences = (
+        list_enabled_digest_preferences()
+    )
+    results: list[dict[str, Any]] = []
+
+    for preference in preferences:
+        user_id = str(
+            preference.get("user_id") or ""
+        )
+        recipient_email = str(
+            preference.get("delivery_email") or ""
+        )
+
+        try:
+            result = send_weekly_digest(
+                user_id=user_id,
+                recipient_email=recipient_email,
+            )
+            results.append(
+                {
+                    "user_id": user_id,
+                    "status": result["status"],
+                    "brief_count": result.get(
+                        "brief_count",
+                        0,
+                    ),
+                    "email_id": result.get(
+                        "email_id"
+                    ),
+                }
+            )
+        except Exception as error:
+            results.append(
+                {
+                    "user_id": user_id or "unknown",
+                    "status": "failed",
+                    "error": str(error),
+                }
+            )
+
+    failures = [
+        result
+        for result in results
+        if result["status"] == "failed"
+    ]
+    sent_count = sum(
+        result["status"] == "sent"
+        for result in results
+    )
+    no_briefs_count = sum(
+        result["status"] == "no_briefs"
+        for result in results
+    )
+
+    if not preferences:
+        overall_status = "no_recipients"
+    elif failures and len(failures) < len(results):
+        overall_status = "partial_failure"
+    elif failures:
+        overall_status = "failure"
+    else:
+        overall_status = "success"
+
+    return {
+        "status": overall_status,
+        "preference_count": len(preferences),
+        "sent_count": sent_count,
+        "no_briefs_count": no_briefs_count,
+        "failure_count": len(failures),
+        "results": results,
     }
 
 
@@ -549,7 +712,7 @@ def parse_arguments() -> argparse.Namespace:
     mode.add_argument(
         "--send",
         action="store_true",
-        help="Send real undelivered briefs",
+        help="Send real briefs to all opted-in users",
     )
 
     return parser.parse_args()
@@ -564,14 +727,7 @@ def main() -> None:
             test_mode=True,
         )
     else:
-        user_id = os.getenv("DIGEST_USER_ID")
-
-        if not user_id:
-            raise SystemExit(
-                "DIGEST_USER_ID is missing from .env"
-            )
-
-        result = send_weekly_digest(user_id)
+        result = send_all_weekly_digests()
 
     print(result)
 

@@ -12,7 +12,7 @@ from typing import Any
 
 from api.utils.supabase_client import get_supabase_client
 from workers.celery_app import celery_app
-from workers.email.digest import send_weekly_digest
+from workers.email.digest import send_all_weekly_digests
 from workers.pipeline import run_pipeline
 from workers.scrapers.general import scrape_competitor
 from workers.scrapers.jobs import collect_jobs
@@ -361,18 +361,12 @@ def monitor_news(
 )
 def send_weekly_digest_task() -> dict[str, Any]:
     """
-    Send real undelivered briefs for the configured MVP user.
+    Send each opted-in user their own undelivered briefs.
 
     Synthetic fixture briefs are excluded by the digest module.
+    One failed recipient does not prevent later users.
     """
-    user_id = os.getenv("DIGEST_USER_ID")
-
-    if not user_id:
-        raise ValueError(
-            "DIGEST_USER_ID is missing from .env"
-        )
-
-    return send_weekly_digest(user_id)
+    return send_all_weekly_digests()
 
 
 @celery_app.task(

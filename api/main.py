@@ -12,6 +12,7 @@ from api.routers import (
     auth,
     briefs,
     competitors,
+    digest_preferences,
     pipeline,
 )
 
@@ -70,6 +71,12 @@ app.include_router(
     competitors.router,
     prefix="/competitors",
     tags=["Competitors"],
+)
+
+app.include_router(
+    digest_preferences.router,
+    prefix="/digest-preferences",
+    tags=["Digest Preferences"],
 )
 
 app.include_router(

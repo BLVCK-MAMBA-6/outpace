@@ -45,6 +45,11 @@ export function AppLayout() {
             <span>02</span>
             Add competitor
           </NavLink>
+
+          <NavLink to="/settings/digest">
+            <span>03</span>
+            Digest settings
+          </NavLink>
         </nav>
 
         <div className="app-sidebar__account">

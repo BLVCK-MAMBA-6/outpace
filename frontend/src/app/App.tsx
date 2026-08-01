@@ -19,6 +19,9 @@ import {
   DashboardPage,
 } from '../pages/DashboardPage'
 import {
+  DigestSettingsPage,
+} from '../pages/DigestSettingsPage'
+import {
   CompetitorDetailPage,
 } from '../pages/CompetitorDetailPage'
 import {
@@ -78,6 +81,10 @@ export function App() {
             <Route
               path="/onboarding"
               element={<OnboardingPage />}
+            />
+            <Route
+              path="/settings/digest"
+              element={<DigestSettingsPage />}
             />
           </Route>
 

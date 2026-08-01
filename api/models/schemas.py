@@ -287,3 +287,28 @@ class AuthenticatedUser(BaseModel):
 
     id: UUID
     email: str | None = None
+
+
+class DigestPreferenceUpdate(BaseModel):
+    """User-controlled weekly digest setting."""
+
+    model_config = ConfigDict(
+        extra="forbid"
+    )
+
+    enabled: bool
+
+
+class DigestPreferenceResponse(BaseModel):
+    """Stored or default weekly digest preference."""
+
+    user_id: UUID
+    enabled: bool
+    delivery_email: str = Field(
+        min_length=3,
+        max_length=320,
+    )
+    frequency: Literal["weekly"] = "weekly"
+    last_sent_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

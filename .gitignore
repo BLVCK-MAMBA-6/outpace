@@ -19,3 +19,6 @@ frontend/dist/
 *.tar.gz
 *.zip
 *.log
+
+# Local Supabase CLI link state
+supabase/.temp/

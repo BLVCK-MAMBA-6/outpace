@@ -63,6 +63,33 @@ def classify_monitoring_error(
     }
 
 
+def digest_execution_result(
+    digest_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert per-user delivery results into runner status."""
+    failure_count = int(
+        digest_result.get("failure_count") or 0
+    )
+
+    execution = {
+        "signal_type": "digest",
+        "status": (
+            "failed"
+            if failure_count
+            else "success"
+        ),
+        "result": digest_result,
+    }
+
+    if failure_count:
+        execution["error"] = (
+            f"{failure_count} user digest "
+            "delivery failure(s)"
+        )
+
+    return execution
+
+
 def utc_now() -> datetime:
     """Return an aware UTC timestamp."""
     return datetime.now(timezone.utc)
@@ -472,11 +499,9 @@ def main() -> None:
         try:
             digest_result = send_weekly_digest_task.run()
             results.append(
-                {
-                    "signal_type": "digest",
-                    "status": "success",
-                    "result": digest_result,
-                }
+                digest_execution_result(
+                    digest_result
+                )
             )
         except Exception as error:
             results.append(
