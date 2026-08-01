@@ -6,7 +6,6 @@ import os
 from typing import Any
 from uuid import UUID, uuid4
 
-from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.dependencies.auth import get_current_user
@@ -18,15 +17,6 @@ from api.models.schemas import (
     TaskStatusResponse,
 )
 from api.utils.supabase_client import get_supabase_client
-from workers.celery_app import celery_app
-from workers.pipeline import run_pipeline
-from workers.tasks import (
-    monitor_general,
-    monitor_jobs,
-    monitor_news,
-    monitor_pricing,
-    monitor_reviews,
-)
 
 
 router = APIRouter()
@@ -34,14 +24,14 @@ supabase = get_supabase_client()
 
 
 COMPETITOR_TASKS = {
-    "general": monitor_general,
-    "pricing": monitor_pricing,
+    "general": "monitor_general",
+    "pricing": "monitor_pricing",
 }
 
 SOURCE_TASKS = {
-    "reviews": monitor_reviews,
-    "jobs": monitor_jobs,
-    "news": monitor_news,
+    "reviews": "monitor_reviews",
+    "jobs": "monitor_jobs",
+    "news": "monitor_news",
 }
 
 SOURCE_TABLES = {
@@ -63,7 +53,7 @@ def _execution_backend() -> str:
     """Return the configured monitoring task backend."""
     value = os.getenv(
         "MONITORING_EXECUTION_BACKEND",
-        CELERY_BACKEND,
+        DATABASE_BACKEND,
     ).strip().lower()
 
     if value not in {
@@ -76,6 +66,23 @@ def _execution_backend() -> str:
         )
 
     return value
+
+
+def _load_celery_task(
+    signal_type: str,
+) -> Any:
+    """Load legacy Celery tasks only when explicitly requested."""
+    from workers import tasks as worker_tasks
+
+    task_name = (
+        COMPETITOR_TASKS.get(signal_type)
+        or SOURCE_TASKS[signal_type]
+    )
+
+    return getattr(
+        worker_tasks,
+        task_name,
+    )
 
 
 def _database_task_response(
@@ -195,6 +202,8 @@ def trigger_pipeline(
     )
 
     try:
+        from workers.pipeline import run_pipeline
+
         return run_pipeline(
             competitor_id=competitor_id,
             signal_type=signal_type,
@@ -327,9 +336,8 @@ def enqueue_monitoring(
             )
 
         if execution_backend == CELERY_BACKEND:
-            task_function = (
-                COMPETITOR_TASKS.get(signal_type)
-                or SOURCE_TASKS[signal_type]
+            task_function = _load_celery_task(
+                signal_type
             )
             task_function.apply_async(
                 args=[target_id],
@@ -408,6 +416,9 @@ def get_task_status(
         == DATABASE_BACKEND
     ):
         return _database_task_response(tracking_task)
+
+    from celery.result import AsyncResult
+    from workers.celery_app import celery_app
 
     task = AsyncResult(
         task_id_value,
