@@ -5,7 +5,7 @@ import {
 import {
   Link,
   useNavigate,
-} from 'react-router-dom'
+} from 'react-router'
 
 import { BrandMark } from '../components/BrandMark'
 import { apiRequest } from '../lib/api'

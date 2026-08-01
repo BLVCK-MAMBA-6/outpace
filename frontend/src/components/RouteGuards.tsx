@@ -4,7 +4,7 @@ import type {
 import {
   Navigate,
   useLocation,
-} from 'react-router-dom'
+} from 'react-router'
 
 import { useAuth } from '../hooks/useAuth'
 

@@ -6,7 +6,7 @@ import type {
 } from 'react'
 import {
   useNavigate,
-} from 'react-router-dom'
+} from 'react-router'
 
 import {
   apiRequest,

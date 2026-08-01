@@ -2,7 +2,7 @@ import {
   NavLink,
   Outlet,
   useNavigate,
-} from 'react-router-dom'
+} from 'react-router'
 
 import { BrandMark } from '../components/BrandMark'
 import { useAuth } from '../hooks/useAuth'

@@ -15,7 +15,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+from api.utils.observability import (
+    flush_sentry,
+    initialize_sentry,
+    report_exception,
+    report_message,
+)
 from api.utils.supabase_client import get_supabase_client
+
+initialize_sentry(
+    service="worker",
+)
+
 from workers.source_health import classify_source_error
 from workers.tasks import (
     list_competitors,
@@ -85,6 +96,16 @@ def digest_execution_result(
         execution["error"] = (
             f"{failure_count} user digest "
             "delivery failure(s)"
+        )
+        report_message(
+            (
+                "Weekly digest fan-out reported "
+                "delivery failures."
+            ),
+            tags={
+                "signal_type": "digest",
+                "failure_count": failure_count,
+            },
         )
 
     return execution
@@ -312,6 +333,16 @@ def run_pending_tasks(
             )
         except Exception as error:
             classification = classify_monitoring_error(error)
+
+            if classification["status"] == "failed":
+                report_exception(
+                    error,
+                    tags={
+                        "execution_path": "pending-task",
+                        "signal_type": signal_type,
+                    },
+                )
+
             fail_database_task(task_id, error)
             results.append(
                 {
@@ -355,6 +386,16 @@ def run_targets(
             )
         except Exception as error:
             classification = classify_monitoring_error(error)
+
+            if classification["status"] == "failed":
+                report_exception(
+                    error,
+                    tags={
+                        "execution_path": "scheduled-target",
+                        "signal_type": signal_type,
+                    },
+                )
+
             print(
                 f"{signal_type} {classification['status']} "
                 f"for {target_id}: {error}",
@@ -504,6 +545,13 @@ def main() -> None:
                 )
             )
         except Exception as error:
+            report_exception(
+                error,
+                tags={
+                    "execution_path": "digest",
+                    "signal_type": "digest",
+                },
+            )
             results.append(
                 {
                     "signal_type": "digest",
@@ -581,4 +629,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        flush_sentry()

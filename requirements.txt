@@ -30,3 +30,6 @@ resend==2.4.0                # Email delivery for weekly digests
 # --- Utilities ---
 pydantic==2.13.4              # Data validation (FastAPI uses this internally too)
 PyYAML==6.0.3                 # Deployment Blueprint validation
+
+# Production error monitoring
+sentry-sdk[fastapi]==2.66.1

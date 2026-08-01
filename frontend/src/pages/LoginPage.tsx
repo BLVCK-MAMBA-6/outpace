@@ -4,7 +4,7 @@ import {
 import type {
   FormEvent,
 } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 
 import { BrandMark } from '../components/BrandMark'
 import { supabase } from '../lib/supabase'

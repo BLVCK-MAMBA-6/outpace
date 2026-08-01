@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.utils.observability import initialize_sentry
 from api.routers import (
     auth,
     briefs,
@@ -18,6 +19,11 @@ from api.routers import (
 
 
 load_dotenv()
+
+initialize_sentry(
+    service="api",
+    include_fastapi=True,
+)
 
 frontend_url = os.getenv(
     "FRONTEND_URL",
