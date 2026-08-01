@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 
 from api.utils.supabase_client import get_supabase_client
+from workers.source_health import classify_source_error
 from workers.tasks import (
     list_competitors,
     list_enabled_sources,
@@ -37,6 +38,29 @@ DATABASE_TASKS = {
     "jobs": monitor_jobs,
     "news": monitor_news,
 }
+
+NON_FATAL_SOURCE_STATUSES = {
+    "blocked",
+    "unsupported",
+    "degraded",
+}
+
+
+def classify_monitoring_error(
+    error: Exception,
+) -> dict[str, str]:
+    """Classify source degradation separately from runner failures."""
+    health_status, error_code = classify_source_error(error)
+
+    return {
+        "status": (
+            "degraded"
+            if health_status in NON_FATAL_SOURCE_STATUSES
+            else "failed"
+        ),
+        "health_status": health_status,
+        "error_code": error_code,
+    }
 
 
 def utc_now() -> datetime:
@@ -260,14 +284,17 @@ def run_pending_tasks(
                 }
             )
         except Exception as error:
+            classification = classify_monitoring_error(error)
             fail_database_task(task_id, error)
             results.append(
                 {
                     "signal_type": signal_type,
                     "target_id": target_id,
                     "task_id": task_id,
-                    "status": "failed",
+                    "status": classification["status"],
                     "error": str(error),
+                    "health_status": classification["health_status"],
+                    "error_code": classification["error_code"],
                 }
             )
 
@@ -300,8 +327,10 @@ def run_targets(
                 }
             )
         except Exception as error:
+            classification = classify_monitoring_error(error)
             print(
-                f"{signal_type} failed for {target_id}: {error}",
+                f"{signal_type} {classification['status']} "
+                f"for {target_id}: {error}",
                 flush=True,
             )
 
@@ -309,8 +338,10 @@ def run_targets(
                 {
                     "signal_type": signal_type,
                     "target_id": target_id,
-                    "status": "failed",
+                    "status": classification["status"],
                     "error": str(error),
+                    "health_status": classification["health_status"],
+                    "error_code": classification["error_code"],
                 }
             )
 
@@ -461,24 +492,51 @@ def main() -> None:
         for result in results
         if result["status"] == "failed"
     ]
+    degraded = [
+        result
+        for result in results
+        if result["status"] == "degraded"
+    ]
 
     summary = {
         "started_at": now.isoformat(),
         "scope": args.scope,
         "signals": signals,
         "task_count": len(results),
-        "success_count": len(results) - len(failed),
+        "success_count": sum(
+            result["status"] == "success"
+            for result in results
+        ),
+        "degraded_count": len(degraded),
         "failure_count": len(failed),
         "status": (
             "partial_failure"
             if failed and len(failed) < len(results)
             else "failure"
             if failed
+            else "degraded"
+            if degraded
             else "success"
         ),
     }
 
     print(json.dumps(summary, indent=2))
+
+    if degraded:
+        print(json.dumps(degraded, indent=2, default=str))
+        for degradation in degraded:
+            github_annotation(
+                level="warning",
+                title=(
+                    "Monitoring source degraded: "
+                    f"{degradation.get('signal_type', 'unknown')}"
+                ),
+                message=(
+                    f"Target "
+                    f"{degradation.get('target_id', 'unknown')}: "
+                    f"{degradation.get('error', 'Unknown error')}"
+                ),
+            )
 
     if failed:
         print(json.dumps(failed, indent=2, default=str))

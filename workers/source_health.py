@@ -53,6 +53,8 @@ def classify_source_error(
         "status code 502",
         "status code 503",
         "status code 504",
+        "detail crawl was incomplete",
+        "snapshot rejected to prevent false removals",
     )
 
     if any(marker in normalized for marker in blocked_markers):
