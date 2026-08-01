@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _27/07/2026_
+Last updated: _01/08/2026_
 
 ---
 
@@ -605,6 +605,111 @@ scheduled pricing pipeline detect the next real movement.
 - All protected OpenAPI operations advertise Bearer authentication.
 
 **Completed:** The frontend login and `/auth/callback` flow were built, the redirect URL was configured, and a real emailed magic-link session successfully loaded the authenticated dashboard.
+
+---
+
+### 30/07/2026 — Zero-cost production monitoring verified
+
+**Decision:** Operate the founder-stage production system within free allowances using Render for the API and frontend, Supabase for authentication, storage, and the database-backed task queue, and GitHub Actions for scheduled monitoring execution.
+
+**Production architecture:**
+
+- Render hosts the public React frontend and FastAPI service.
+- Supabase provides magic-link authentication, user-scoped data, snapshots, briefs, source health, and the `monitoring_tasks` queue.
+- GitHub Actions replaces the paid Redis, Celery worker, and Celery Beat services during the founder stage.
+- Website requests enqueue monitoring tasks without requiring a continuously running background worker.
+- Scheduled and manually triggered GitHub Actions runs drain pending tasks and execute monitoring pipelines.
+
+**Verified result:**
+
+- Production magic-link authentication reached the authenticated dashboard.
+- The production frontend communicated successfully with the authenticated Render API.
+- A Deel hiring check was queued from the production website.
+- GitHub Actions run `30540752006` completed successfully in 5 minutes 22 seconds.
+- The Deel provider stored a new live hiring snapshot.
+- Diffing detected genuine hiring movement.
+- Gemini generated a new decision-ready hiring brief.
+- The new brief appeared in the production competitor page and intelligence history.
+- Previous briefs remained intact.
+- The task returned to `Collection completed` in the production interface.
+- Transient Deel detail-page handling was hardened without weakening incomplete-snapshot rejection.
+
+**Follow-up status (01/08/2026):**
+
+- [x] Multiple naturally scheduled GitHub Actions runs completed successfully.
+- [x] Weekly digest delivery was converted from one environment-mapped recipient to authenticated per-user preferences.
+- [x] Render API startup overhead was reduced while keeping GitHub Actions workers fully operational.
+- [ ] Continue monitoring monthly GitHub Actions usage against the private-repository allowance.
+- [ ] Free Render API cold starts remain an accepted founder-stage limitation.
+
+---
+
+### 01/08/2026 — Production stability verification completed
+
+**Decision:** Keep all monitoring and scraping workers in GitHub Actions while preventing the Render API from eagerly loading the heavy worker runtime during normal web requests.
+
+**Verified result:**
+
+- Repeated scheduled monitoring runs completed successfully on the hardened production code.
+- Temporary provider blocking and incomplete upstream responses are reported as degraded without deleting valid historical snapshots.
+- Genuine application failures remain fatal and fail the GitHub Actions run.
+- GitHub workflow action runtimes were updated and verified in production.
+- The Render API now defaults to the database-backed monitoring queue.
+- Legacy Celery support remains available through lazy imports.
+- API import memory decreased from 122.7 MiB to 63.1 MiB in the Codespace verification environment.
+- The API no longer eagerly imports Celery, worker tasks, the synthesis pipeline, or scraper modules.
+- All 46 backend regression tests passed.
+- Render deployed commit `c3bbf56` successfully.
+- The production API health endpoint returned `{"status":"healthy"}`.
+- GitHub Actions jobs run `30695061296` completed successfully at commit `c3bbf56`, proving that the complete worker stack remains operational.
+
+---
+
+### 01/08/2026 — Per-user weekly digest production-verified
+
+**Decision:** Weekly email delivery is opt-in, authenticated, user-scoped, and sent only to each user's verified Supabase login email.
+
+**Verified result:**
+
+- Supabase migration `011_digest_preferences.sql` was applied and recorded in production migration history.
+- New users default to digest delivery disabled.
+- Authenticated users can enable or disable their own weekly preference.
+- Users cannot provide an arbitrary delivery address.
+- The protected `/settings/digest` interface is live on the production frontend.
+- GitHub Actions fans out weekly delivery across all enabled users without allowing one recipient failure to stop the remaining recipients.
+- Each user receives only their own real, undelivered briefs.
+- Test fixtures are excluded from production delivery.
+- Successful delivery records `last_sent_at` and marks only the delivered user's briefs.
+- Digest preference, delivery, fan-out, and runner regression tests passed.
+- A real production digest delivered 19 actionable signals to the enabled user's inbox.
+- Commit `550a24d` is deployed on the production frontend and API.
+
+**Remaining beta email requirement:**
+
+- Verify an Outpace-owned sending domain in Resend.
+- Replace `onboarding@resend.dev` with an address on the verified domain.
+- Verify delivery and isolation using a second authenticated user.
+
+---
+
+### Current milestone — Production error monitoring
+
+The next milestone is to capture and alert on:
+
+- FastAPI backend exceptions.
+- React frontend crashes.
+- GitHub Actions worker failures.
+- API availability failures.
+- Render crashes and out-of-memory incidents.
+- Release and environment information without exposing user secrets.
+
+After error monitoring is production-verified, the remaining launch sequence is:
+
+1. Configure the verified email-sending domain.
+2. Perform the second-user isolation and delivery smoke test.
+3. Remove or isolate remaining production test data where appropriate.
+4. Invite the first small group of friendly beta users.
+
 
 ---
 
