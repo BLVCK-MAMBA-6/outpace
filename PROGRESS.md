@@ -1,7 +1,7 @@
 # Outpace — Build Progress
 
 Tracking the full journey from MVP to Phase 3. Check items off as they're done.
-Last updated: _01/08/2026_
+Last updated: _02/08/2026_
 
 ---
 
@@ -692,24 +692,54 @@ scheduled pricing pipeline detect the next real movement.
 
 ---
 
-### Current milestone — Production error monitoring
+### 02/08/2026 — Founder-stage production error monitoring verified
 
-The next milestone is to capture and alert on:
+**Decision:** Use privacy-scrubbed Sentry error reporting for the production API, browser frontend, and GitHub Actions worker while keeping tracing and profiling disabled during the founder stage.
 
-- FastAPI backend exceptions.
-- React frontend crashes.
-- GitHub Actions worker failures.
-- API availability failures.
-- Render crashes and out-of-memory incidents.
-- Release and environment information without exposing user secrets.
+**Implemented:**
 
-After error monitoring is production-verified, the remaining launch sequence is:
+- FastAPI initializes Sentry for production API exceptions.
+- The React application initializes browser error reporting and includes a crash boundary.
+- The scheduled monitoring runner reports fatal source and digest failures.
+- Expected degraded-source results remain nonfatal and are not reported as application errors.
+- API and worker events are separated using `production-api` and `production-worker` environments.
+- Frontend events use the `production-web` environment.
+- Event processing removes identity information, authorization values, cookies, query strings, environment variables, and other sensitive data.
+- Frontend dependencies were upgraded to secure versions and both production and complete npm audits returned zero vulnerabilities.
 
-1. Configure the verified email-sending domain.
-2. Perform the second-user isolation and delivery smoke test.
-3. Remove or isolate remaining production test data where appropriate.
-4. Invite the first small group of friendly beta users.
+**Verified result:**
 
+- All 53 backend regression tests passed.
+- Frontend production build and lint completed successfully.
+- API import memory remained approximately 67.6 MiB with Sentry enabled.
+- Commit `ea3caf0` deployed successfully to the production API and frontend.
+- The production API health endpoint returned HTTP `200`.
+- Controlled API and worker verification events generated Sentry event IDs.
+- The worker event appeared in Sentry with service `worker`, environment `production-worker`, release `ea3caf0`, and error level.
+- Sentry generated and delivered the configured worker issue email alert.
+- The deployed frontend bundle contains its Sentry configuration and emitted envelope requests for a controlled browser error.
+- A local browser privacy extension was confirmed to be blocking those frontend requests with `ERR_BLOCKED_BY_CLIENT`.
+- GitHub Actions run `30725259478` completed successfully in 58 seconds after the observability deployment, confirming that the real production worker remained operational.
+
+**Remaining monitoring follow-ups:**
+
+- Confirm one frontend event from a browser without telemetry blocking.
+- Add a cold-start-aware external API availability check for crashes and out-of-memory terminations that cannot report themselves through in-process Sentry.
+- Consider production source-map uploads later if minified frontend stack traces become difficult to diagnose.
+
+---
+
+### Current milestone — Friendly beta readiness
+
+Complete these launch gates before inviting users:
+
+1. Rotate the exposed G2 API token and Sentry client keys, then update local, GitHub Actions, and Render configuration.
+2. Verify an Outpace-owned sending domain in Resend and replace the temporary sender.
+3. Create a second authenticated user and verify complete data and digest isolation.
+4. Add external API availability monitoring that tolerates the accepted Render free-tier cold start.
+5. Remove or clearly isolate remaining production test data.
+6. Prepare the beta invitation, feedback channel, basic privacy information, and support process.
+7. Invite the first small group of friendly beta users.
 
 ---
 
