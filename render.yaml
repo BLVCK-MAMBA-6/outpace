@@ -37,10 +37,6 @@ services:
         value: gemini-3-flash
       - key: GEMINI_FALLBACK_MODEL
         value: gemini-2.5-flash
-      - key: G2_API_TOKEN
-        sync: false
-      - key: G2_API_BASE_URL
-        value: https://data.g2.com
       - key: MONITORING_EXECUTION_BACKEND
         value: database
 

@@ -70,7 +70,6 @@ those variables into public browser assets.
 | `SUPABASE_AUTH_REDIRECT_URL` | `https://<outpace-web-host>/auth/callback` |
 | `FRONTEND_URL` | `https://<outpace-web-host>` |
 | `GEMINI_API_KEY` | Production Gemini key |
-| `G2_API_TOKEN` | Optional; leave unset until the account has entitlement |
 
 ### Worker variables
 

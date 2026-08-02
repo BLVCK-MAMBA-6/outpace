@@ -49,9 +49,6 @@ jobs:
       GEMINI_MODEL: gemini-3-flash
       GEMINI_FALLBACK_MODEL: gemini-2.5-flash
 
-      G2_API_TOKEN: ${{ secrets.G2_API_TOKEN }}
-      G2_API_BASE_URL: https://data.g2.com
-
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
 
