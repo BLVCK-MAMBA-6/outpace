@@ -48,6 +48,7 @@ def classify_source_error(
         "bad gateway",
         "gateway timeout",
         "returned no jobs",
+        "no article urls were discovered",
         "did not contain a recognized zero-openings",
         "status code 500",
         "status code 502",

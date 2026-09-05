@@ -33,6 +33,23 @@ class ScheduledMonitoringClassificationTests(unittest.TestCase):
             },
         )
 
+    def test_empty_html_news_source_is_degraded(self) -> None:
+        classification = classify_monitoring_error(
+            ValueError(
+                "No article URLs were discovered from "
+                "the HTML news source"
+            )
+        )
+
+        self.assertEqual(
+            classification,
+            {
+                "status": "degraded",
+                "health_status": "degraded",
+                "error_code": "provider_degraded",
+            },
+        )
+
     def test_blocked_source_is_nonfatal(self) -> None:
         classification = classify_monitoring_error(
             ValueError("Cloudflare access denied")
