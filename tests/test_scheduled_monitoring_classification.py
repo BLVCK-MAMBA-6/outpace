@@ -50,6 +50,23 @@ class ScheduledMonitoringClassificationTests(unittest.TestCase):
             },
         )
 
+    def test_changed_deel_pricing_layout_is_degraded(self) -> None:
+        classification = classify_monitoring_error(
+            ValueError(
+                "Could not identify Deel pricing card: "
+                "Hire full-time employees"
+            )
+        )
+
+        self.assertEqual(
+            classification,
+            {
+                "status": "degraded",
+                "health_status": "degraded",
+                "error_code": "provider_degraded",
+            },
+        )
+
     def test_blocked_source_is_nonfatal(self) -> None:
         classification = classify_monitoring_error(
             ValueError("Cloudflare access denied")

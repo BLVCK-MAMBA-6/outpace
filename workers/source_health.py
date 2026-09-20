@@ -49,6 +49,7 @@ def classify_source_error(
         "gateway timeout",
         "returned no jobs",
         "no article urls were discovered",
+        "could not identify deel pricing card",
         "did not contain a recognized zero-openings",
         "status code 500",
         "status code 502",
