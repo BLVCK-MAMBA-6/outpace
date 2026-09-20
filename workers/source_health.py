@@ -23,6 +23,7 @@ def classify_source_error(
         "captcha",
         "verify you are human",
         "just a moment",
+        "bot-protection page",
         "access denied",
         "status code 401",
         "status code 403",
